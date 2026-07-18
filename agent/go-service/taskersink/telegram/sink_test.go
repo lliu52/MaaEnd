@@ -3,88 +3,95 @@ package telegram
 import (
 	"net/http"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	maa "github.com/MaaXYZ/maa-framework-go/v4"
 )
 
-func TestFormatMessage(t *testing.T) {
-	t.Parallel()
-
-	now := time.Date(2026, time.July, 18, 15, 4, 5, 0, time.FixedZone("CDT", -5*60*60))
-	message := formatMessage(
-		"✅",
-		"completed",
-		maa.TaskerTaskDetail{TaskID: 7, Entry: "DailyRewardStart"},
-		"Gaming PC",
-		now,
-		90*time.Second,
-	)
-
-	for _, expected := range []string{
-		"✅ MaaEnd task completed",
-		"Task: DailyRewardStart",
-		"Task ID: 7",
-		"Device: Gaming PC",
-		"Time: 2026-07-18 15:04:05 CDT",
-		"Duration: 1m30s",
-	} {
-		if !strings.Contains(message, expected) {
-			t.Errorf("message does not contain %q:\n%s", expected, message)
-		}
-	}
-}
-
-func TestSinkReportsLifecycleEvents(t *testing.T) {
+func TestFormatRunSummary(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name     string
-		event    maa.EventStatus
-		expected string
+		summary  runSummary
+		expected []string
 	}{
-		{name: "completed", event: maa.EventStatusSucceeded, expected: "✅ MaaEnd task completed"},
-		{name: "failed", event: maa.EventStatusFailed, expected: "❌ MaaEnd task failed"},
+		{
+			name:     "all succeeded",
+			summary:  runSummary{total: 3, succeeded: 3},
+			expected: []string{"✅ MAA 运行完成", "任务成功 3/3"},
+		},
+		{
+			name: "includes failed task log",
+			summary: runSummary{
+				total:     3,
+				succeeded: 2,
+				failed: []failedTask{
+					{entry: "DailyRewardStart", log: "最后节点 DailyRewardClaim"},
+				},
+			},
+			expected: []string{
+				"❌ MAA 运行完成",
+				"任务成功 2/3",
+				"❌ DailyRewardStart",
+				"日志：最后节点 DailyRewardClaim",
+			},
+		},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-
-			start := time.Date(2026, time.July, 18, 15, 0, 0, 0, time.UTC)
-			var nowMu sync.Mutex
-			now := start
-			sink := &Sink{
-				client: newBotClient(http.DefaultClient, "", Config{}),
-				now: func() time.Time {
-					nowMu.Lock()
-					defer nowMu.Unlock()
-					return now
-				},
-				queue:   make(chan notification, 2),
-				started: make(map[uint64]time.Time),
-			}
-			detail := maa.TaskerTaskDetail{TaskID: 8, Entry: "DailyRewardStart"}
-
-			sink.OnTaskerTask(nil, maa.EventStatusStarting, detail)
-			startedMessage := <-sink.queue
-			if !strings.Contains(startedMessage.text, "▶️ MaaEnd task started") {
-				t.Fatalf("starting message = %q", startedMessage.text)
-			}
-
-			nowMu.Lock()
-			now = start.Add(2 * time.Minute)
-			nowMu.Unlock()
-			sink.OnTaskerTask(nil, test.event, detail)
-			finishedMessage := <-sink.queue
-			if !strings.Contains(finishedMessage.text, test.expected) {
-				t.Errorf("finished message does not contain %q: %s", test.expected, finishedMessage.text)
-			}
-			if !strings.Contains(finishedMessage.text, "Duration: 2m0s") {
-				t.Errorf("finished message has no duration: %s", finishedMessage.text)
+			message := formatRunSummary(test.summary)
+			for _, expected := range test.expected {
+				if !strings.Contains(message, expected) {
+					t.Errorf("message does not contain %q:\n%s", expected, message)
+				}
 			}
 		})
+	}
+}
+
+func TestSinkReportsOneMessagePerRunBoundary(t *testing.T) {
+	t.Parallel()
+
+	sink := &Sink{
+		client: newBotClient(http.DefaultClient, "", Config{}),
+		queue:  make(chan notification, 4),
+	}
+	first := maa.TaskerTaskDetail{TaskID: 1, Entry: "DailyRewardStart"}
+	second := maa.TaskerTaskDetail{TaskID: 2, Entry: "CreditShoppingMain"}
+
+	sink.OnTaskerTask(nil, maa.EventStatusStarting, first)
+	if message := receiveNotification(t, sink.queue); message.text != "✅ MAA 开始运行" {
+		t.Fatalf("starting message = %q", message.text)
+	}
+
+	sink.OnTaskerTask(nil, maa.EventStatusSucceeded, first)
+	sink.OnTaskerTask(nil, maa.EventStatusStarting, second)
+	sink.OnTaskerTask(nil, maa.EventStatusFailed, second)
+
+	summary := receiveNotification(t, sink.queue)
+	for _, expected := range []string{
+		"❌ MAA 运行完成",
+		"任务成功 1/2",
+		"❌ CreditShoppingMain",
+		"日志：最后节点未知",
+	} {
+		if !strings.Contains(summary.text, expected) {
+			t.Errorf("summary does not contain %q:\n%s", expected, summary.text)
+		}
+	}
+}
+
+func receiveNotification(t *testing.T, queue <-chan notification) notification {
+	t.Helper()
+	select {
+	case item := <-queue:
+		return item
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for notification")
+		return notification{}
 	}
 }

@@ -15,7 +15,6 @@ const (
 
 	envBotToken            = "MAAEND_TELEGRAM_BOT_TOKEN"
 	envChatID              = "MAAEND_TELEGRAM_CHAT_ID"
-	envLabel               = "MAAEND_TELEGRAM_LABEL"
 	envMessageThreadID     = "MAAEND_TELEGRAM_MESSAGE_THREAD_ID"
 	envDisableNotification = "MAAEND_TELEGRAM_DISABLE_NOTIFICATION"
 	envConfigPath          = "MAAEND_TELEGRAM_CONFIG"
@@ -25,7 +24,6 @@ const (
 type Config struct {
 	BotToken            string `json:"bot_token"`
 	ChatID              string `json:"chat_id"`
-	Label               string `json:"label"`
 	MessageThreadID     int64  `json:"message_thread_id"`
 	DisableNotification bool   `json:"disable_notification"`
 }
@@ -97,9 +95,6 @@ func applyEnvironmentOverrides(cfg *Config) {
 	}
 	if value := strings.TrimSpace(os.Getenv(envChatID)); value != "" {
 		cfg.ChatID = value
-	}
-	if value := strings.TrimSpace(os.Getenv(envLabel)); value != "" {
-		cfg.Label = value
 	}
 	if value := strings.TrimSpace(os.Getenv(envMessageThreadID)); value != "" {
 		if parsed, err := strconv.ParseInt(value, 10, 64); err == nil {

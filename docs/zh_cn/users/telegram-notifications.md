@@ -1,6 +1,6 @@
 # Telegram 任务通知
 
-MaaEnd 可以在每个任务开始、完成或失败时，通过 Telegram Bot 向手机发送消息。通知由 Go Agent 异步发送；Telegram 网络异常只会写入日志，不会改变任务结果或阻塞游戏脚本。
+MaaEnd 可以在一轮任务开始和全部结束时，通过 Telegram Bot 向手机发送汇总消息。通知由 Go Agent 异步发送；Telegram 网络异常只会写入日志，不会改变任务结果或阻塞游戏脚本。
 
 ## 配置
 
@@ -13,13 +13,11 @@ MaaEnd 可以在每个任务开始、完成或失败时，通过 Telegram Bot �
 {
     "bot_token": "123456789:replace-with-your-bot-token",
     "chat_id": "123456789",
-    "label": "My PC",
     "message_thread_id": 0,
     "disable_notification": false
 }
 ```
 
-- `label`：可选，用于区分运行 MaaEnd 的电脑。
 - `message_thread_id`：可选，发送到 Telegram 论坛群组话题时填写话题 ID；普通私聊保持 `0`。
 - `disable_notification`：设为 `true` 时使用 Telegram 静默通知。
 
@@ -31,7 +29,6 @@ MaaEnd 可以在每个任务开始、完成或失败时，通过 Telegram Bot �
 
 - `MAAEND_TELEGRAM_BOT_TOKEN`
 - `MAAEND_TELEGRAM_CHAT_ID`
-- `MAAEND_TELEGRAM_LABEL`（可选）
 - `MAAEND_TELEGRAM_MESSAGE_THREAD_ID`（可选）
 - `MAAEND_TELEGRAM_DISABLE_NOTIFICATION`（可选，`true` 或 `false`）
 - `MAAEND_TELEGRAM_CONFIG`（可选，自定义配置文件路径）
@@ -40,6 +37,15 @@ MaaEnd 可以在每个任务开始、完成或失败时，通过 Telegram Bot �
 
 ## 消息内容
 
-每条消息包含任务入口名称、Task ID、时间和可选的设备标签；完成或失败消息还会包含运行时长。任务入口名称是 MaaEnd 内部的稳定名称，例如 `DailyRewardStart`。
+一轮运行只发送两类消息：
+
+- 开始时发送 `✅ MAA 开始运行`。
+- 全部任务结束后发送成功数量，例如 `✅ MAA 运行完成` 和 `任务成功 5/5`。
+
+如果存在失败任务，完成消息使用 `❌`，并列出失败任务的内部入口名称及最后执行节点。入口名称是 MaaEnd 内部的稳定名称，例如 `DailyRewardStart`。
+
+## 自动更新
+
+此自定义分支从 `interface.json` 移除了 `mirrorchyan_rid`，MXU 因此不会自动检查或下载 MaaEnd 更新。需要更新时，请先同步上游 `v2` 分支，再合并或 rebase Telegram 功能分支并重新构建。
 
 如果没有收到消息，请检查 MaaEnd 日志中的 `Telegram task notifications` 或 `Failed to send Telegram task notification`。常见原因包括 Bot Token 错误、Chat ID 错误、未先向 Bot 发送消息，或本机无法连接 `api.telegram.org`。

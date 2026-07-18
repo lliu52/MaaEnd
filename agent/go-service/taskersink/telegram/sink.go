@@ -12,77 +12,173 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-const notificationQueueSize = 128
+const (
+	notificationQueueSize = 128
+	runSettleDelay        = time.Second
+	runningPollInterval   = 250 * time.Millisecond
+)
 
 type notification struct {
-	taskID uint64
-	entry  string
-	text   string
+	text string
 }
 
-// Sink reports MaaFramework task lifecycle events to Telegram without blocking task execution.
+type failedTask struct {
+	entry string
+	log   string
+}
+
+type runSummary struct {
+	active    bool
+	total     int
+	succeeded int
+	failed    []failedTask
+}
+
+// Sink reports one start message and one summary for each MaaEnd run.
 type Sink struct {
 	client *botClient
-	now    func() time.Time
 	queue  chan notification
 
-	mu      sync.Mutex
-	started map[uint64]time.Time
+	mu         sync.Mutex
+	summary    runSummary
+	generation uint64
 }
 
 func newSink(cfg Config, client *http.Client, endpoint string) *Sink {
 	sink := &Sink{
-		client:  newBotClient(client, endpoint, cfg),
-		now:     time.Now,
-		queue:   make(chan notification, notificationQueueSize),
-		started: make(map[uint64]time.Time),
+		client: newBotClient(client, endpoint, cfg),
+		queue:  make(chan notification, notificationQueueSize),
 	}
 	go sink.run()
 	return sink
 }
 
-// OnTaskerTask handles top-level task lifecycle events emitted by MaaFramework.
-func (s *Sink) OnTaskerTask(_ *maa.Tasker, event maa.EventStatus, detail maa.TaskerTaskDetail) {
-	now := s.now()
-	var status string
-	var icon string
-	var duration time.Duration
-
-	s.mu.Lock()
+// OnTaskerTask collects top-level task results into a single run summary.
+func (s *Sink) OnTaskerTask(tasker *maa.Tasker, event maa.EventStatus, detail maa.TaskerTaskDetail) {
 	switch event {
 	case maa.EventStatusStarting:
-		s.started[detail.TaskID] = now
-		status = "started"
-		icon = "▶️"
+		s.onTaskStarting()
 	case maa.EventStatusSucceeded:
-		status = "completed"
-		icon = "✅"
-		if started, ok := s.started[detail.TaskID]; ok {
-			duration = now.Sub(started)
-			delete(s.started, detail.TaskID)
-		}
+		s.onTaskFinished(tasker, detail, true)
 	case maa.EventStatusFailed:
-		status = "failed"
-		icon = "❌"
-		if started, ok := s.started[detail.TaskID]; ok {
-			duration = now.Sub(started)
-			delete(s.started, detail.TaskID)
-		}
-	default:
-		s.mu.Unlock()
-		return
+		s.onTaskFinished(tasker, detail, false)
 	}
+}
+
+func (s *Sink) onTaskStarting() {
+	s.mu.Lock()
+	isNewRun := !s.summary.active
+	if isNewRun {
+		s.summary = runSummary{active: true}
+	}
+	s.summary.total++
+	s.generation++
 	s.mu.Unlock()
 
-	text := formatMessage(icon, status, detail, s.client.config.Label, now, duration)
-	item := notification{taskID: detail.TaskID, entry: detail.Entry, text: text}
+	if isNewRun {
+		s.enqueue(formatRunStarted())
+	}
+}
+
+func (s *Sink) onTaskFinished(tasker *maa.Tasker, detail maa.TaskerTaskDetail, succeeded bool) {
+	s.mu.Lock()
+	if !s.summary.active {
+		// Normally Starting is always emitted first. Keep the summary correct if
+		// an older runtime only forwards the terminal event.
+		s.summary = runSummary{active: true, total: 1}
+	}
+	if succeeded {
+		s.summary.succeeded++
+	} else {
+		s.summary.failed = append(s.summary.failed, failedTask{
+			entry: detail.Entry,
+			log:   lastNodeLog(tasker, detail.TaskID),
+		})
+	}
+	s.generation++
+	generation := s.generation
+	s.mu.Unlock()
+
+	go s.finishWhenIdle(tasker, generation)
+}
+
+func (s *Sink) finishWhenIdle(tasker *maa.Tasker, generation uint64) {
+	timer := time.NewTimer(runSettleDelay)
+	defer timer.Stop()
+	<-timer.C
+
+	for {
+		s.mu.Lock()
+		stale := !s.summary.active || s.generation != generation
+		s.mu.Unlock()
+		if stale {
+			return
+		}
+
+		if tasker != nil && tasker.Running() {
+			timer.Reset(runningPollInterval)
+			<-timer.C
+			continue
+		}
+
+		s.mu.Lock()
+		if !s.summary.active || s.generation != generation {
+			s.mu.Unlock()
+			return
+		}
+		summary := s.summary
+		s.summary = runSummary{}
+		s.mu.Unlock()
+
+		s.enqueue(formatRunSummary(summary))
+		return
+	}
+}
+
+func lastNodeLog(tasker *maa.Tasker, taskID uint64) string {
+	if tasker == nil {
+		return "最后节点未知"
+	}
+	detail, err := tasker.GetTaskDetail(int64(taskID))
+	if err != nil || detail == nil || len(detail.Nodes) == 0 {
+		return "最后节点未知"
+	}
+	last, err := detail.Nodes[len(detail.Nodes)-1].GetDetail()
+	if err != nil || last == nil || strings.TrimSpace(last.Name) == "" {
+		return "最后节点未知"
+	}
+	return fmt.Sprintf("最后节点 %s", last.Name)
+}
+
+func formatRunStarted() string {
+	return "✅ MAA 开始运行"
+}
+
+func formatRunSummary(summary runSummary) string {
+	icon := "✅"
+	if len(summary.failed) > 0 {
+		icon = "❌"
+	}
+
+	var builder strings.Builder
+	fmt.Fprintf(&builder, "%s MAA 运行完成\n", icon)
+	fmt.Fprintf(&builder, "任务成功 %d/%d", summary.succeeded, summary.total)
+	if len(summary.failed) == 0 {
+		return builder.String()
+	}
+
+	builder.WriteString("\n失败任务：")
+	for _, failed := range summary.failed {
+		fmt.Fprintf(&builder, "\n❌ %s\n日志：%s", failed.entry, failed.log)
+	}
+	return builder.String()
+}
+
+func (s *Sink) enqueue(text string) {
 	select {
-	case s.queue <- item:
+	case s.queue <- notification{text: text}:
 	default:
-		log.Warn().
-			Uint64("task_id", detail.TaskID).
-			Str("entry", detail.Entry).
-			Msg("Telegram notification queue is full, dropping task notification")
+		log.Warn().Msg("Telegram notification queue is full, dropping notification")
 	}
 }
 
@@ -92,33 +188,7 @@ func (s *Sink) run() {
 		err := s.client.send(ctx, item.text)
 		cancel()
 		if err != nil {
-			log.Warn().
-				Err(err).
-				Uint64("task_id", item.taskID).
-				Str("entry", item.entry).
-				Msg("Failed to send Telegram task notification")
+			log.Warn().Err(err).Msg("Failed to send Telegram notification")
 		}
 	}
-}
-
-func formatMessage(
-	icon string,
-	status string,
-	detail maa.TaskerTaskDetail,
-	label string,
-	now time.Time,
-	duration time.Duration,
-) string {
-	var builder strings.Builder
-	fmt.Fprintf(&builder, "%s MaaEnd task %s\n", icon, status)
-	fmt.Fprintf(&builder, "Task: %s\n", detail.Entry)
-	fmt.Fprintf(&builder, "Task ID: %d\n", detail.TaskID)
-	if label = strings.TrimSpace(label); label != "" {
-		fmt.Fprintf(&builder, "Device: %s\n", label)
-	}
-	fmt.Fprintf(&builder, "Time: %s", now.Format("2006-01-02 15:04:05 MST"))
-	if duration > 0 {
-		fmt.Fprintf(&builder, "\nDuration: %s", duration.Round(time.Second))
-	}
-	return builder.String()
 }

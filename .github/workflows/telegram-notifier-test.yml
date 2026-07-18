@@ -1,0 +1,34 @@
+name: telegram-notifier-test
+
+on:
+  push:
+    paths:
+      - ".github/workflows/telegram-notifier-test.yml"
+      - "agent/go-service/taskersink/telegram/**"
+  pull_request:
+    paths:
+      - ".github/workflows/telegram-notifier-test.yml"
+      - "agent/go-service/taskersink/telegram/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: "agent/go-service/go.mod"
+          cache-dependency-path: |
+            agent/go-service/go.mod
+            agent/go-service/go.sum
+
+      - name: Run tests
+        working-directory: agent/go-service
+        run: go test ./taskersink/telegram
