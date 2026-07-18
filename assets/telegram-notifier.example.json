@@ -1,0 +1,7 @@
+{
+    "bot_token": "123456789:replace-with-your-bot-token",
+    "chat_id": "123456789",
+    "label": "My PC",
+    "message_thread_id": 0,
+    "disable_notification": false
+}

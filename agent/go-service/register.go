@@ -39,6 +39,7 @@ import (
 	"github.com/MaaXYZ/MaaEnd/agent/go-service/taskersink/hdrcheck"
 	"github.com/MaaXYZ/MaaEnd/agent/go-service/taskersink/processcheck"
 	"github.com/MaaXYZ/MaaEnd/agent/go-service/taskersink/taskfail"
+	"github.com/MaaXYZ/MaaEnd/agent/go-service/taskersink/telegram"
 	"github.com/MaaXYZ/MaaEnd/agent/go-service/trialofswordmancy"
 	"github.com/MaaXYZ/MaaEnd/agent/go-service/visitfriends"
 	webevent202605 "github.com/MaaXYZ/MaaEnd/agent/go-service/webevent/202605"
@@ -54,6 +55,7 @@ func registerAll() {
 	hdrcheck.Register()
 	processcheck.Register()
 	taskfail.Register()
+	telegram.Register()
 	cursormove.Register()
 
 	// General Custom
