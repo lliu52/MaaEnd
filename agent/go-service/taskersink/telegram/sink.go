@@ -14,8 +14,13 @@ import (
 
 const (
 	notificationQueueSize = 128
-	runSettleDelay        = 250 * time.Millisecond
+	sendTimeout           = 10 * time.Second
 )
+
+var shutdownTaskEntries = map[string]struct{}{
+	"CloseGame":    {},
+	"MXU_KILLPROC": {},
+}
 
 type notification struct {
 	text string
@@ -40,7 +45,7 @@ type Sink struct {
 
 	mu         sync.Mutex
 	summary    runSummary
-	generation uint64
+	sender     func(string)
 }
 
 func newSink(cfg Config, client *http.Client, endpoint string) *Sink {
@@ -56,7 +61,7 @@ func newSink(cfg Config, client *http.Client, endpoint string) *Sink {
 func (s *Sink) OnTaskerTask(tasker *maa.Tasker, event maa.EventStatus, detail maa.TaskerTaskDetail) {
 	switch event {
 	case maa.EventStatusStarting:
-		s.onTaskStarting()
+		s.onTaskStarting(detail)
 	case maa.EventStatusSucceeded:
 		s.onTaskFinished(tasker, detail, true)
 	case maa.EventStatusFailed:
@@ -64,14 +69,31 @@ func (s *Sink) OnTaskerTask(tasker *maa.Tasker, event maa.EventStatus, detail ma
 	}
 }
 
-func (s *Sink) onTaskStarting() {
+func (s *Sink) onTaskStarting(detail maa.TaskerTaskDetail) {
+	if _, isShutdownTask := shutdownTaskEntries[detail.Entry]; isShutdownTask {
+		s.mu.Lock()
+		if !s.summary.active {
+			s.mu.Unlock()
+			return
+		}
+		summary := s.summary
+		s.summary = runSummary{}
+		s.mu.Unlock()
+
+		// Closing the game and closing MXU are destructive control actions. Send
+		// the result before either action starts, and do not return until Telegram
+		// has responded. In particular, MXU_KILLPROC may terminate MXU from inside
+		// the action, so its terminal callback is not a safe notification point.
+		s.send(formatRunSummary(summary))
+		return
+	}
+
 	s.mu.Lock()
 	isNewRun := !s.summary.active
 	if isNewRun {
 		s.summary = runSummary{active: true}
 	}
 	s.summary.total++
-	s.generation++
 	s.mu.Unlock()
 
 	if isNewRun {
@@ -82,9 +104,10 @@ func (s *Sink) onTaskStarting() {
 func (s *Sink) onTaskFinished(tasker *maa.Tasker, detail maa.TaskerTaskDetail, succeeded bool) {
 	s.mu.Lock()
 	if !s.summary.active {
-		// Normally Starting is always emitted first. Keep the summary correct if
-		// an older runtime only forwards the terminal event.
-		s.summary = runSummary{active: true, total: 1}
+		// Shutdown actions finish after the summary has already been sent. They
+		// are control actions and must not start a second run summary.
+		s.mu.Unlock()
+		return
 	}
 	if succeeded {
 		s.summary.succeeded++
@@ -94,28 +117,7 @@ func (s *Sink) onTaskFinished(tasker *maa.Tasker, detail maa.TaskerTaskDetail, s
 			log:   lastNodeLog(tasker, detail.TaskID),
 		})
 	}
-	s.generation++
-	generation := s.generation
 	s.mu.Unlock()
-
-	go s.finishAfterQuietPeriod(generation)
-}
-
-func (s *Sink) finishAfterQuietPeriod(generation uint64) {
-	timer := time.NewTimer(runSettleDelay)
-	defer timer.Stop()
-	<-timer.C
-
-	s.mu.Lock()
-	if !s.summary.active || s.generation != generation {
-		s.mu.Unlock()
-		return
-	}
-	summary := s.summary
-	s.summary = runSummary{}
-	s.mu.Unlock()
-
-	s.enqueue(formatRunSummary(summary))
 }
 
 func lastNodeLog(tasker *maa.Tasker, taskID uint64) string {
@@ -167,11 +169,18 @@ func (s *Sink) enqueue(text string) {
 
 func (s *Sink) run() {
 	for item := range s.queue {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		err := s.client.send(ctx, item.text)
-		cancel()
-		if err != nil {
-			log.Warn().Err(err).Msg("Failed to send Telegram notification")
-		}
+		s.send(item.text)
+	}
+}
+
+func (s *Sink) send(text string) {
+	if s.sender != nil {
+		s.sender(text)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), sendTimeout)
+	defer cancel()
+	if err := s.client.send(ctx, text); err != nil {
+		log.Warn().Err(err).Msg("Failed to send Telegram notification")
 	}
 }
