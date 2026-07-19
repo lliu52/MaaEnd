@@ -14,8 +14,7 @@ import (
 
 const (
 	notificationQueueSize = 128
-	runSettleDelay        = time.Second
-	runningPollInterval   = 250 * time.Millisecond
+	runSettleDelay        = 250 * time.Millisecond
 )
 
 type notification struct {
@@ -99,40 +98,24 @@ func (s *Sink) onTaskFinished(tasker *maa.Tasker, detail maa.TaskerTaskDetail, s
 	generation := s.generation
 	s.mu.Unlock()
 
-	go s.finishWhenIdle(tasker, generation)
+	go s.finishAfterQuietPeriod(generation)
 }
 
-func (s *Sink) finishWhenIdle(tasker *maa.Tasker, generation uint64) {
+func (s *Sink) finishAfterQuietPeriod(generation uint64) {
 	timer := time.NewTimer(runSettleDelay)
 	defer timer.Stop()
 	<-timer.C
 
-	for {
-		s.mu.Lock()
-		stale := !s.summary.active || s.generation != generation
+	s.mu.Lock()
+	if !s.summary.active || s.generation != generation {
 		s.mu.Unlock()
-		if stale {
-			return
-		}
-
-		if tasker != nil && tasker.Running() {
-			timer.Reset(runningPollInterval)
-			<-timer.C
-			continue
-		}
-
-		s.mu.Lock()
-		if !s.summary.active || s.generation != generation {
-			s.mu.Unlock()
-			return
-		}
-		summary := s.summary
-		s.summary = runSummary{}
-		s.mu.Unlock()
-
-		s.enqueue(formatRunSummary(summary))
 		return
 	}
+	summary := s.summary
+	s.summary = runSummary{}
+	s.mu.Unlock()
+
+	s.enqueue(formatRunSummary(summary))
 }
 
 func lastNodeLog(tasker *maa.Tasker, taskID uint64) string {

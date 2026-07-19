@@ -85,6 +85,34 @@ func TestSinkReportsOneMessagePerRunBoundary(t *testing.T) {
 	}
 }
 
+func TestNewTaskCancelsPendingSummary(t *testing.T) {
+	t.Parallel()
+
+	sink := &Sink{
+		client: newBotClient(http.DefaultClient, "", Config{}),
+		queue:  make(chan notification, 4),
+	}
+	first := maa.TaskerTaskDetail{TaskID: 1, Entry: "FirstTask"}
+	second := maa.TaskerTaskDetail{TaskID: 2, Entry: "SecondTask"}
+
+	sink.OnTaskerTask(nil, maa.EventStatusStarting, first)
+	_ = receiveNotification(t, sink.queue)
+	sink.OnTaskerTask(nil, maa.EventStatusSucceeded, first)
+	sink.OnTaskerTask(nil, maa.EventStatusStarting, second)
+
+	select {
+	case item := <-sink.queue:
+		t.Fatalf("received an early summary: %q", item.text)
+	case <-time.After(2 * runSettleDelay):
+	}
+
+	sink.OnTaskerTask(nil, maa.EventStatusSucceeded, second)
+	summary := receiveNotification(t, sink.queue)
+	if !strings.Contains(summary.text, "任务成功 2/2") {
+		t.Fatalf("summary = %q", summary.text)
+	}
+}
+
 func receiveNotification(t *testing.T, queue <-chan notification) notification {
 	t.Helper()
 	select {
