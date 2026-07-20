@@ -459,6 +459,7 @@ deps
 
 config
 debug
+telegram-notifier.json
 
 # macOS
 .DS_Store
