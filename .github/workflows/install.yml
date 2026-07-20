@@ -427,8 +427,6 @@ jobs:
     name: Generate changelog
     needs: meta
     runs-on: ubuntu-latest
-    outputs:
-      release_body: ${{ steps.git-cliff.outputs.content }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -449,6 +447,12 @@ jobs:
           OUTPUT: CHANGES.md
           GITHUB_REPO: ${{ github.repository }}
 
+      - name: Upload release notes
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-changelog
+          path: CHANGES.md
+
   release:
     if: ${{ needs.meta.outputs.is_release == 'true' }}
     needs: [meta, package_linux_tarball, package_macos_dmg, package_win_zip, changelog]
@@ -468,6 +472,12 @@ jobs:
         with:
           pattern: MaaEnd-*-dmg
           path: artifacts
+
+      - name: Download release notes
+        uses: actions/download-artifact@v7
+        with:
+          name: release-changelog
+          path: release-notes
 
       - name: Prepare release artifacts
         run: |
@@ -503,7 +513,7 @@ jobs:
         with:
           files: artifacts/*
           tag_name: ${{ needs.meta.outputs.tag }}
-          body: ${{ needs.changelog.outputs.release_body }}
+          body_path: release-notes/CHANGES.md
           draft: false
           prerelease: ${{ needs.meta.outputs.is_prerelease == 'true' }}
 
