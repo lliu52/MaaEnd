@@ -46,13 +46,16 @@ type Sink struct {
 	mu         sync.Mutex
 	summary    runSummary
 	sender     func(string)
+	statePath  string
 }
 
 func newSink(cfg Config, client *http.Client, endpoint string) *Sink {
 	sink := &Sink{
-		client: newBotClient(client, endpoint, cfg),
-		queue:  make(chan notification, notificationQueueSize),
+		client:    newBotClient(client, endpoint, cfg),
+		queue:     make(chan notification, notificationQueueSize),
+		statePath: defaultStatePath(),
 	}
+	sink.summary = sink.loadSummary()
 	go sink.run()
 	return sink
 }
@@ -85,6 +88,7 @@ func (s *Sink) onTaskStarting(detail maa.TaskerTaskDetail) {
 		// has responded. In particular, MXU_KILLPROC may terminate MXU from inside
 		// the action, so its terminal callback is not a safe notification point.
 		s.send(formatRunSummary(summary))
+		s.clearSummary()
 		return
 	}
 
@@ -94,7 +98,9 @@ func (s *Sink) onTaskStarting(detail maa.TaskerTaskDetail) {
 		s.summary = runSummary{active: true}
 	}
 	s.summary.total++
+	summary := s.summary
 	s.mu.Unlock()
+	s.persistSummary(summary)
 
 	if isNewRun {
 		s.enqueue(formatRunStarted())
@@ -117,7 +123,9 @@ func (s *Sink) onTaskFinished(tasker *maa.Tasker, detail maa.TaskerTaskDetail, s
 			log:   lastNodeLog(tasker, detail.TaskID),
 		})
 	}
+	summary := s.summary
 	s.mu.Unlock()
+	s.persistSummary(summary)
 }
 
 func lastNodeLog(tasker *maa.Tasker, taskID uint64) string {

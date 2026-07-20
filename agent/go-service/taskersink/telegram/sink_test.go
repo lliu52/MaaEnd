@@ -2,6 +2,8 @@ package telegram
 
 import (
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -164,6 +166,41 @@ func TestShutdownWaitsForFinalMessage(t *testing.T) {
 	case <-finished:
 	case <-time.After(3 * time.Second):
 		t.Fatal("shutdown callback did not return after Telegram send completed")
+	}
+}
+
+func TestSummarySurvivesAgentRestart(t *testing.T) {
+	t.Parallel()
+
+	statePath := filepath.Join(t.TempDir(), "telegram-run-summary.json")
+	firstAgent := &Sink{
+		client:    newBotClient(http.DefaultClient, "", Config{}),
+		queue:     make(chan notification, 1),
+		statePath: statePath,
+	}
+	task := maa.TaskerTaskDetail{TaskID: 1, Entry: "DailyRewardStart"}
+	firstAgent.OnTaskerTask(nil, maa.EventStatusStarting, task)
+	_ = receiveNotification(t, firstAgent.queue)
+	firstAgent.OnTaskerTask(nil, maa.EventStatusSucceeded, task)
+
+	secondAgent := &Sink{
+		client:    newBotClient(http.DefaultClient, "", Config{}),
+		queue:     make(chan notification, 1),
+		statePath: statePath,
+	}
+	secondAgent.summary = secondAgent.loadSummary()
+	if !secondAgent.summary.active || secondAgent.summary.total != 1 || secondAgent.summary.succeeded != 1 {
+		t.Fatalf("restored summary = %+v", secondAgent.summary)
+	}
+
+	finalMessage := make(chan string, 1)
+	secondAgent.sender = func(text string) { finalMessage <- text }
+	secondAgent.OnTaskerTask(nil, maa.EventStatusStarting, maa.TaskerTaskDetail{Entry: "MXU_KILLPROC"})
+	if message := receiveText(t, finalMessage); !strings.Contains(message, "任务成功 1/1") {
+		t.Fatalf("summary = %q", message)
+	}
+	if _, err := os.Stat(statePath); !os.IsNotExist(err) {
+		t.Fatalf("summary state was not removed: %v", err)
 	}
 }
 
