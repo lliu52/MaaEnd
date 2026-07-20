@@ -1,4 +1,4 @@
-import {mkdirSync, readFileSync, writeFileSync} from "node:fs";
+import {mkdirSync, writeFileSync} from "node:fs";
 import {dirname, resolve} from "node:path";
 import {fileURLToPath, pathToFileURL} from "node:url";
 
@@ -6,7 +6,6 @@ import {getOperatorCaseName, isAdminOperator, sellProductLocations, settlementDa
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const OUTPUT_PATH = resolve(__dirname, "../../../assets/data/SellProduct/selection_data.json");
-const ZH_CN_LOCALE_PATH = resolve(__dirname, "../../../assets/locales/interface/zh_cn.json");
 const SUPPORTED_LANGUAGES = [
     "CN",
     "TC",
@@ -21,6 +20,7 @@ const LOCALE_BY_LANGUAGE = {
     JP: "ja_jp",
     KR: "ko_kr",
 };
+const OPERATOR_CHAR_ID_PATTERN = /^chr_(\d+)(?:_|$)/;
 
 // 活动结束且 zmdmap 移除这些物品后，删除此临时过滤。
 const TEMP_EXCLUDED_ITEM_CN_NAMES = new Set([
@@ -68,24 +68,44 @@ function operatorCacheName(operator) {
     );
 }
 
-function buildOperatorLocaleOrder() {
-    const locale = JSON.parse(readFileSync(ZH_CN_LOCALE_PATH, "utf8"));
-    return new Map(
-        Object.keys(locale)
-            .filter((key) => key.startsWith("operator."))
-            .map((key, index) => [
-                key.slice("operator.".length),
-                index,
-            ]),
+function parseOperatorCharId(operator) {
+    const charId = operator?.charId?.trim() || "";
+    const match = OPERATOR_CHAR_ID_PATTERN.exec(charId);
+    if (!match) {
+        const label = operator?.name?.EN || operator?.name?.CN || "<unknown>";
+        throw new Error(`operator ${JSON.stringify(label)} has invalid charId ${JSON.stringify(charId)}`);
+    }
+    return {
+        id: charId,
+        number: Number.parseInt(match[1], 10),
+    };
+}
+
+function buildOperatorFeatureCounts(settlement) {
+    const counts = new Map();
+    for (const feature of settlement.settlementFeatures || []) {
+        const matchedInFeature = new Set();
+        for (const operator of feature.matchingOperators || []) {
+            const {id} = parseOperatorCharId(operator);
+            if (matchedInFeature.has(id)) continue;
+            matchedInFeature.add(id);
+            counts.set(id, (counts.get(id) || 0) + 1);
+        }
+    }
+    return counts;
+}
+
+function compareInGameOperatorOrder(left, right) {
+    return (
+        right.featureCount - left.featureCount ||
+        right.characterNumber - left.characterNumber ||
+        left.name.localeCompare(right.name)
     );
 }
 
-function operatorOrder(operator, localeOrder) {
-    return localeOrder.get(getOperatorCaseName(operator)) ?? Number.MAX_SAFE_INTEGER;
-}
-
 function registerOperator(operators, operator) {
-    if (!operator || isAdminOperator(operator)) return null;
+    const {id: charId, number: characterNumber} = parseOperatorCharId(operator);
+    if (isAdminOperator(operator)) return null;
     const name = getOperatorCaseName(operator);
     const names = buildLocalizedNames(operator.name);
     if (!name || Object.keys(names).length === 0) return null;
@@ -98,7 +118,11 @@ function registerOperator(operators, operator) {
             ...names,
         },
     };
-    return name;
+    return {
+        name,
+        charId,
+        characterNumber,
+    };
 }
 
 function targetBonusTier(entry) {
@@ -110,19 +134,22 @@ function targetBonusTier(entry) {
     return 3;
 }
 
-export function buildLocationOperatorOrder(settlement, acceptedBonusTypes, localeOrder, operators, targetUsage) {
+export function buildLocationOperatorOrder(settlement, acceptedBonusTypes, operators, targetUsage) {
     const accepted = new Set(acceptedBonusTypes);
+    const featureCounts = buildOperatorFeatureCounts(settlement);
     const entries = new Map();
     for (const feature of settlement.settlementFeatures || []) {
         const matchedTypes = (feature.bonuses || []).map((bonus) => bonus.type).filter((type) => accepted.has(type));
         if (matchedTypes.length === 0) continue;
 
         for (const operator of feature.matchingOperators || []) {
-            const name = registerOperator(operators, operator);
-            if (!name) continue;
+            const registered = registerOperator(operators, operator);
+            if (!registered) continue;
+            const {name, charId, characterNumber} = registered;
             const entry = entries.get(name) || {
                 name,
-                operator,
+                characterNumber,
+                featureCount: featureCounts.get(charId) || 0,
                 bonusTypes: new Set(),
             };
             for (const type of matchedTypes) {
@@ -132,13 +159,11 @@ export function buildLocationOperatorOrder(settlement, acceptedBonusTypes, local
         }
     }
 
-    const sorted = [...entries.values()].sort(
-        (left, right) =>
-            operatorOrder(left.operator, localeOrder) - operatorOrder(right.operator, localeOrder) ||
-            left.name.localeCompare(right.name),
-    );
+    const sorted = [...entries.values()].sort((left, right) => {
+        const tierDifference = targetUsage ? targetBonusTier(left) - targetBonusTier(right) : 0;
+        return tierDifference || compareInGameOperatorOrder(left, right);
+    });
     if (targetUsage) {
-        sorted.sort((left, right) => targetBonusTier(left) - targetBonusTier(right));
         return sorted.map((entry) => ({
             name: entry.name,
             bonus_tier: targetBonusTier(entry),
@@ -203,7 +228,6 @@ export function buildSelectionItems(data = settlementData, sourceLocations = sel
 }
 
 export function buildSellProductSelectionData() {
-    const localeOrder = buildOperatorLocaleOrder();
     const operators = {};
     for (const [
         ,
@@ -225,17 +249,10 @@ export function buildSellProductSelectionData() {
                     "expProfit",
                     "moneyProfit",
                 ],
-                localeOrder,
                 operators,
                 true,
             ),
-            restore_operators: buildLocationOperatorOrder(
-                settlement,
-                ["moneyProduceSpeed"],
-                localeOrder,
-                operators,
-                false,
-            ),
+            restore_operators: buildLocationOperatorOrder(settlement, ["moneyProduceSpeed"], operators, false),
         };
     }
 

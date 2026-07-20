@@ -41,6 +41,19 @@ test("SellProduct 保留按星期执行入口与任务选项", () => {
     ]);
 });
 
+test("SellProduct 按固定地区顺序售卖且不再使用自动起始地区", () => {
+    const pipeline = readPipeline(new URL("../../../assets/resource/pipeline/SellProduct.json", import.meta.url));
+
+    assert.deepEqual(pipeline.SellProductLoop.next, [
+        "SellProductValleyIV",
+        "SellProductWuling",
+        "SellProductTaskEnd",
+    ]);
+    assert.equal(pipeline.SellProductAuto, undefined);
+    assert.equal(pipeline.SellProductAutoValleyIV, undefined);
+    assert.equal(pipeline.SellProductAutoWuling, undefined);
+});
+
 test("SellProduct templates consume separate minimal projections of the shared location model", () => {
     const locationIds = sellProductLocations.map((location) => location.LocationId);
     for (const rows of [
@@ -257,7 +270,9 @@ test("SellProduct operator locations form an always-enabled active-flag chain", 
         new URL("../../../assets/resource/pipeline/SellProduct/OperatorSession.json", import.meta.url),
     );
     const pipeline = {...scan, ...session};
-    const registrationNodes = sellProductLocations.map((location) => `SellProductRegisterAuto${location.LocationId}`);
+    const registrationNodes = sellProductLocations.map(
+        (location) => `SellProductRegisterLocation${location.LocationId}`,
+    );
     const chain = [
         "SellProductInitializeOperatorSession",
         ...registrationNodes,
@@ -279,7 +294,7 @@ test("SellProduct operator locations form an always-enabled active-flag chain", 
         const option = task.option[`${location.RegionPrefix}${location.LocationId}`];
         const enabledCase = option.cases.find((itemCase) => itemCase.name === "Yes");
         const disabledCase = option.cases.find((itemCase) => itemCase.name === "No");
-        const nodeName = `SellProductRegisterAuto${location.LocationId}`;
+        const nodeName = `SellProductRegisterLocation${location.LocationId}`;
         assert.deepEqual(enabledCase.pipeline_override[nodeName].custom_action_param, {
             operation: "register",
             location: location.LocationId,
@@ -287,6 +302,50 @@ test("SellProduct operator locations form an always-enabled active-flag chain", 
         });
         assert.equal(disabledCase.pipeline_override[nodeName], undefined);
     }
+});
+
+test("SellProduct operator switching uses shared core dispatch nodes", () => {
+    const core = readPipeline(new URL("../../../assets/resource/pipeline/SellProduct/SellCore.json", import.meta.url));
+    assert.deepEqual(core.SellProductSellMain.next, ["SellProductBeforeSellOperator"]);
+    assert.deepEqual(core.SellProductBeforeSellOperator.next, [
+        "[Anchor]SellProductBeforeSellOperatorTarget",
+    ]);
+    assert.deepEqual(core.SellProductSellLoopEnd.next, ["SellProductAfterSellOperator"]);
+    assert.deepEqual(core.SellProductAfterSellOperator.next, [
+        "[Anchor]SellProductAfterSellOperatorTarget",
+    ]);
+
+    for (const location of sellProductLocations) {
+        const pipeline = readPipeline(
+            new URL(
+                `../../../assets/resource/pipeline/SellProduct/Outposts/${location.LocationId}.json`,
+                import.meta.url,
+            ),
+        );
+        const prefix = `SellProduct${location.LocationId}`;
+        assert.deepEqual(pipeline[`${prefix}SetOperatorAnchors`].anchor, {
+            SellProductBeforeSellOperatorTarget: `${prefix}BeforeSellOperator`,
+            SellProductAfterSellOperatorTarget: `${prefix}AfterSellOperator`,
+        });
+        assert.deepEqual(pipeline[`${prefix}SetOperatorAnchors`].next, [
+            "SellProductSellMain",
+        ]);
+        assert.equal(pipeline[`${prefix}SetBeforeSellOperatorAnchor`], undefined);
+        assert.equal(pipeline[`${prefix}SetAfterSellOperatorAnchor`], undefined);
+    }
+
+    const task = readPipeline(new URL("../../../assets/tasks/SellProduct.json", import.meta.url));
+    const disabledCase = task.option.SellProductOperatorAutoSwitch.cases.find((itemCase) => itemCase.name === "No");
+    assert.deepEqual(disabledCase.pipeline_override.SellProductSellMain, {
+        next: ["SellProductSellLoop"],
+    });
+    assert.deepEqual(disabledCase.pipeline_override.SellProductSellLoopEnd, {next: []});
+    assert.deepEqual(disabledCase.pipeline_override.SellProductScanOperatorList, {next: []});
+    assert.deepEqual(Object.keys(disabledCase.pipeline_override).sort(), [
+        "SellProductScanOperatorList",
+        "SellProductSellLoopEnd",
+        "SellProductSellMain",
+    ]);
 });
 
 test("SellProduct pipeline templates use one dynamic priority loop instead of fixed attempts", () => {
@@ -338,14 +397,15 @@ test("SellProduct 缺货物品通过据点锚点标记并在本次任务内共�
     }
 });
 
-test("SellProduct 已派驻干员会被临时排除并从列表顶部重新选择", () => {
+test("SellProduct 按启用据点边界处理已派驻干员冲突", () => {
     const pipelineTemplate = readFileSync(new URL("./pipeline-template.jsonc", import.meta.url), "utf8");
 
     for (const usage of [
         "Target",
         "Restore",
     ]) {
-        assert.match(pipelineTemplate, new RegExp(`SellProduct\\$\\{LocationId\\}${usage}OperatorAlreadyAssigned`));
+        assert.match(pipelineTemplate, new RegExp(`SellProduct\\$\\{LocationId\\}${usage}OperatorManagedConflict`));
+        assert.match(pipelineTemplate, new RegExp(`SellProduct\\$\\{LocationId\\}${usage}OperatorProtectedConflict`));
         assert.match(
             pipelineTemplate,
             new RegExp(`SellProduct\\$\\{LocationId\\}Cancel${usage}OperatorAlreadyAssigned`),
@@ -357,9 +417,87 @@ test("SellProduct 已派驻干员会被临时排除并从列表顶部重新选�
     }
 
     assert.equal((pipelineTemplate.match(/"operation": "exclude_selected"/g) || []).length, 2);
-    assert.match(pipelineTemplate, /"YellowConfirmButtonType1"/);
+    assert.equal((pipelineTemplate.match(/"custom_recognition": "SellProductOperatorConflict"/g) || []).length, 4);
+    assert.match(pipelineTemplate, /"result": "managed"/);
+    assert.match(pipelineTemplate, /"result": "protected"/);
     assert.match(pipelineTemplate, /"CancelButton"/);
     assert.doesNotMatch(pipelineTemplate, /"GrayCancelButton"/);
+
+    for (const location of sellProductLocations) {
+        const pipeline = readPipeline(
+            new URL(
+                `../../../assets/resource/pipeline/SellProduct/Outposts/${location.LocationId}.json`,
+                import.meta.url,
+            ),
+        );
+        const prefix = `SellProduct${location.LocationId}`;
+        for (const [
+            usageName,
+            usage,
+        ] of [
+            [
+                "Target",
+                "target",
+            ],
+            [
+                "Restore",
+                "restore",
+            ],
+        ]) {
+            const managed = pipeline[`${prefix}${usageName}OperatorManagedConflict`];
+            const protectedConflict = pipeline[`${prefix}${usageName}OperatorProtectedConflict`];
+            const expectedParam = {
+                usage,
+                location: location.LocationId,
+            };
+
+            assert.equal(managed.recognition, "And");
+            assert.equal(managed.all_of[0], "SellProductOperatorAlreadyAssignedPrompt");
+            assert.deepEqual(managed.all_of[1], {
+                recognition: "Custom",
+                roi: [
+                    240,
+                    260,
+                    800,
+                    90,
+                ],
+                custom_recognition: "SellProductOperatorConflict",
+                custom_recognition_param: {result: "managed", ...expectedParam},
+            });
+            assert.equal(managed.all_of[2], "YellowConfirmButtonType1");
+            assert.equal(managed.box_index, 2);
+
+            assert.equal(protectedConflict.recognition, "And");
+            assert.equal(protectedConflict.all_of[0], "SellProductOperatorAlreadyAssignedPrompt");
+            assert.deepEqual(protectedConflict.all_of[1], {
+                recognition: "Custom",
+                roi: [
+                    240,
+                    260,
+                    800,
+                    90,
+                ],
+                custom_recognition: "SellProductOperatorConflict",
+                custom_recognition_param: {result: "protected", ...expectedParam},
+            });
+            assert.equal(protectedConflict.all_of[2], "CancelButton");
+
+            const close = pipeline[`${prefix}Close${usageName}OperatorLiaison`];
+            assert.deepEqual(close.all_of, [
+                "SellProductInOperatorLiaison",
+                "SellProductCheckWithdrawText",
+                "CloseButtonType1",
+            ]);
+            assert.equal(close.box_index, 2);
+
+            const confirm = pipeline[`${prefix}Confirm${usageName}Operator`];
+            assert.equal(confirm.recognition, "And");
+            assert.equal(confirm.all_of[0], "SellProductCheckAssignText");
+            assert.equal(confirm.all_of[1], "WhiteConfirmButtonType1");
+            assert.equal(confirm.box_index, 1);
+            assert.equal(confirm.target_offset, undefined);
+        }
+    }
 });
 
 test("SellProduct generated outpost nodes report confirmed runtime state changes", () => {

@@ -7,7 +7,7 @@
             "description": "$task.SellProduct.description",
             "option": [
                 "SellProductSchedule",
-                "SellProductForceRefreshOperatorCache",
+                "SellProductOperatorAutoSwitch",
                 "SellProductPriorityRules",
                 "SellProductItemReserveRules",
                 "${RegionPrefix}Sell"
@@ -337,6 +337,36 @@
                 }
             }
         },
+        "SellProductOperatorAutoSwitch": {
+            "type": "switch",
+            "label": "$task.SellProduct.OperatorAutoSwitch",
+            "description": "$task.SellProduct.OperatorAutoSwitchDescription",
+            "default_case": "Yes",
+            "cases": [
+                {
+                    "name": "Yes",
+                    "option": [
+                        "SellProductForceRefreshOperatorCache"
+                    ]
+                },
+                {
+                    "name": "No",
+                    "pipeline_override": {
+                        "SellProductScanOperatorList": {
+                            "next": []
+                        },
+                        "SellProductSellMain": {
+                            "next": [
+                                "SellProductSellLoop"
+                            ]
+                        },
+                        "SellProductSellLoopEnd": {
+                            "next": []
+                        }
+                    }
+                }
+            ]
+        },
         "SellProductForceRefreshOperatorCache": {
             "type": "switch",
             "label": "$task.SellProduct.ForceRefreshOperatorCache",
@@ -380,7 +410,7 @@
                         "SellProduct${LocationId}": {
                             "enabled": true
                         },
-                        "SellProductRegisterAuto${LocationId}": {
+                        "SellProductRegisterLocation${LocationId}": {
                             "custom_action_param": {
                                 "operation": "register",
                                 "location": "${LocationId}",

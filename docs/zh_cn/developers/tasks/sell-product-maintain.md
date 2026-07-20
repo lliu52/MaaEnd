@@ -21,19 +21,17 @@ SellProductSchedule                                  （Task 入口，按星期�
                       └─ SellProductRegisterReserveRule{1..6} （固定串联，空槽位直接跳过）
                            └─ SellProductRegisterPriorityItem{1..6} （固定串联，空槽位直接跳过）
                                 └─ SellProductInitializeOperatorSession （初始化干员规划与恢复锁）
-                                     └─ SellProductRegisterAuto{LocationId} × N （固定串联，非活跃据点直接跳过）
+                                     └─ SellProductRegisterLocation{LocationId} × N （固定串联，非活跃据点直接跳过）
                                           └─ SellProductOperatorSessionReady
                                                └─ SellProductLoop         （进入地区遍历）
 ```
 
 保留规则和优先物品的 12 个注册节点始终启用，并按槽位顺序固定串联。任务选项只覆盖已配置槽位的稳定 `itemId`；未配置槽位保留空 `item_id`，Custom Action 将其作为 no-op 成功跳过。据点注册节点同样固定串联，任务选项只把启用据点的 `active` 参数设为 `true`，非活跃据点直接 no-op。两段初始化流程均无需为任意启用组合维护逐层缩短的 `next` 候选列表。
 
-`SellProductLoop` 根据配置执行四号谷地、武陵或自动选择地区。地区入口通过 SceneManager 进入据点管理页，准备干员缓存，再用 `[JumpBack]` 依次执行该地区的据点：
+`SellProductLoop` 始终按“四号谷地 → 武陵”的固定地区顺序执行；地区内据点也按生成模型中的固定顺序执行。未启用地区或据点由对应入口直接跳过，因此相同的启用组合总会得到相同的售卖顺序。地区入口通过 SceneManager 进入据点管理页，准备干员缓存，再用 `[JumpBack]` 依次执行该地区的据点：
 
 ```text
 SellProductLoop                                      （地区建设主循环）
-  ├─ SellProductAuto                                 （识别当前地区并选择入口）
-  │    └─ SellProductValleyIV / SellProductWuling
   ├─ SellProductValleyIVSell                         （进入四号谷地据点管理）
   │    ├─ [Anchor]SellProductValleyIVPrepareOperatorCache （准备干员缓存）
   │    └─ [JumpBack]SellProductRefugeeCamp → SellProductInfraStation
@@ -47,27 +45,31 @@ SellProductLoop                                      （地区建设主循环）
   └─ SellProductTaskEnd                              （所有启用地区处理完成）
 ```
 
-每个据点先设置当前据点专用的 anchor，按计划切换联络干员，然后进入通用售卖循环。循环结束后，通过恢复 anchor 派驻全局方案选出的生产干员，再返回地区节点继续下一个据点。
+每个据点先在一个节点中设置售前、售后两个 target anchor，再进入 `SellCore.json` 的公共调度节点。公共节点按计划切换联络干员，然后进入通用售卖循环；循环结束后，再通过售后公共节点按全局方案派驻生产干员，返回地区节点继续下一个据点。
 
 ```text
 SellProduct{LocationId}                              （识别/进入目标据点）
-  └─ [Anchor]SellProductBeforeSellOperator           （检查并切换售卖干员）
-       └─ SellProductSellLoop                        （按优先级循环选择并售卖货品）
-            └─ SellProductSellLoopEnd                （券不足或候选耗尽）
-                 └─ [Anchor]SellProductAfterSellOperator （恢复干员并返回地区流程）
+  └─ SellProduct{LocationId}SetOperatorAnchors       （绑定当前据点的售前、售后目标）
+       └─ SellProductSellMain                        （公共售卖入口）
+            └─ SellProductBeforeSellOperator         （公共售前调度节点）
+                 └─ [Anchor]SellProductBeforeSellOperatorTarget
+                      └─ SellProductSellLoop         （按优先级循环选择并售卖货品）
+                           └─ SellProductSellLoopEnd （券不足或候选耗尽）
+                                └─ SellProductAfterSellOperator （公共售后调度节点）
+                                     └─ [Anchor]SellProductAfterSellOperatorTarget
 ```
 
 据点管理未解锁时，`SellProductOutpostLocked` 返回地区主循环；超出据点可兑换调度券上限时，`SellProductAidQuotaExceededStop` 停止整个任务。超限弹窗不自动确认。
 
 ## 自动选择干员规则
 
-`assets/data/SellProduct/selection_data.json` 包含生成器从 `tools/pipeline-generate/data/settlement_trade.json` 提取的候选干员、加成类型、多语言名称和稳定顺序。Go 根据该文件为启用据点规划售卖干员和恢复干员，Pipeline 执行对应的列表操作。
+`assets/data/SellProduct/selection_data.json` 包含生成器从 `tools/pipeline-generate/data/settlement_trade.json` 提取的候选干员、加成类型、多语言名称和稳定顺序。Go 根据该文件为启用据点规划售卖干员和售后生产派驻，Pipeline 执行对应的列表操作。
 
-自动选择分为售前派驻和售后恢复两个阶段，两者共用“检查当前干员 → 打开列表 → 逐页扫描 → 按完整拥有集合重规划”的闭环：
+自动选择分为售前派驻和售后生产派驻两个阶段，两者共用“检查当前干员 → 打开列表 → 逐页扫描 → 按完整拥有集合重规划”的闭环。代码中的 `restore` 表示售后生产派驻阶段：
 
 ```text
-[Anchor]SellProductBeforeSellOperator                    （进入当前据点的售前派驻流程）
-  └─ SellProduct{LocationId}BeforeSellOperator
+SellProductBeforeSellOperator                            （进入售前公共调度节点）
+  └─ [Anchor]SellProductBeforeSellOperatorTarget → SellProduct{LocationId}BeforeSellOperator
        ├─ SellProduct{LocationId}CurrentTargetOperator   （计划第一候选已在岗，直接售卖）
        │    └─ SellProductSellLoop
        └─ SellProduct{LocationId}OpenTargetOperatorList  （打开联络干员列表）
@@ -75,9 +77,11 @@ SellProduct{LocationId}                              （识别/进入目标据�
                  ├─ SelectTargetOperator → ConfirmTargetOperator
                  │    → CloseTargetOperatorLiaison → TargetOperatorDone
                  │      （命中计划候选，派驻并返回售卖循环）
-                 ├─ TargetOperatorAlreadyAssigned → CancelTargetOperatorAlreadyAssigned
+                 ├─ TargetOperatorManagedConflict → CloseTargetOperatorLiaison
+                 │      （来源据点已启用，确认调至当前据点）
+                 ├─ TargetOperatorProtectedConflict → CancelTargetOperatorAlreadyAssigned
                  │    → CloseTargetOperatorLiaisonAfterAlreadyAssigned → OpenTargetOperatorList
-                 │      （候选已在其他据点派驻，临时排除后从列表顶部重新选择）
+                 │      （来源据点未启用或无法识别，取消、临时排除并从顶部重新选择）
                  ├─ SwipeTargetOperatorList → InTargetOperatorList
                  │      （当前页未命中，继续向下扫描）
                  ├─ RetryTargetOperatorAfterScan → CloseTargetOperatorLiaisonAfterScan
@@ -86,17 +90,19 @@ SellProduct{LocationId}                              （识别/进入目标据�
                  ├─ TargetOperatorNotFound              （完整扫描后无候选，停止任务）
                  └─ TargetOperatorScanFailed            （扫描或缓存失败，停止任务）
 
-[Anchor]SellProductAfterSellOperator                     （售卖结束后恢复生产干员）
-  └─ SellProduct{LocationId}AfterSellOperator
+SellProductAfterSellOperator                             （进入售后公共调度节点）
+  └─ [Anchor]SellProductAfterSellOperatorTarget → SellProduct{LocationId}AfterSellOperator
        ├─ SellProduct{LocationId}CurrentRestoreOperator  （恢复目标已在岗，完成据点）
        └─ SellProduct{LocationId}OpenRestoreOperatorList
             └─ SellProduct{LocationId}InRestoreOperatorList
                  ├─ SelectRestoreOperator → ConfirmRestoreOperator
                  │    → CloseRestoreOperatorLiaison → RestoreOperatorDone
                  │      （派驻恢复目标并锁定 location -> operator）
-                 ├─ RestoreOperatorAlreadyAssigned → CancelRestoreOperatorAlreadyAssigned
+                 ├─ RestoreOperatorManagedConflict → CloseRestoreOperatorLiaison
+                 │      （来源据点已启用，确认调至当前据点）
+                 ├─ RestoreOperatorProtectedConflict → CancelRestoreOperatorAlreadyAssigned
                  │    → CloseRestoreOperatorLiaisonAfterAlreadyAssigned → OpenRestoreOperatorList
-                 │      （恢复候选已在其他据点派驻，临时排除后重新规划）
+                 │      （来源据点未启用或无法识别，取消、临时排除并重新规划）
                  ├─ SwipeRestoreOperatorList → InRestoreOperatorList
                  │      （当前页未命中，继续向下扫描）
                  ├─ RetryRestoreOperatorAfterScan → CloseRestoreOperatorLiaisonAfterScan
@@ -107,15 +113,18 @@ SellProduct{LocationId}                              （识别/进入目标据�
                  └─ RestoreOperatorScanFailed            （扫描或缓存失败，停止任务）
 ```
 
-售卖干员优先级固定为：
+售卖干员先按售卖收益分档：
 
 1. 同时提供经验与信用点加成；
 2. 仅提供信用点加成；
 3. 仅提供经验加成；
-4. 同档加成优先沿用当前派驻；需要更换时，选择能让全局恢复方案沿用更多售卖干员、且最终派驻可供后续任务直接售卖的候选；
-5. 全局恢复结果仍相同时，按游戏干员列表顺序稳定选择。
+4. 同档候选保持游戏干员列表中的稳定顺序。
 
-`selection_data.json` 为每个售卖候选保留 `bonus_tier`，避免把同档候选的稳定顺序误当成收益差异。当前派驻属于最高可用档时，Pipeline 不打开干员列表；需要更换时，Go 会逐个评估同档候选对应的全局恢复方案。
+游戏列表顺序按当前据点动态变化。生成器根据实测规则从 zmdmap 推导：先按干员命中该据点全部 `settlementFeatures` 的数量降序，再按 `charId` 数字部分降序；稀有度不参与排序。售卖候选只在相同收益档内应用该顺序，恢复候选直接应用该顺序，从而让后续 Go 规划在收益和恢复结果等价时尽量选择列表中更靠前、所需滚动更少的干员。
+
+本文所称“最高加成档”是当前据点最高售卖收益档与该据点恢复候选的交集，也就是同时完美满足售卖和恢复的干员。账号拥有至少一名完美候选时，售前规划只在这些完美候选中选择，即使候选当前被另一个已启用据点占用，也不会降级绕开；若账号没有完美候选，才回退到可用的最高售卖收益档。
+
+`selection_data.json` 为每个售卖候选保留 `bonus_tier`，避免把同档候选的稳定顺序误当成收益差异。当前派驻属于可用的最高加成档时，Pipeline 不打开干员列表；需要更换时，Go 会逐个评估同档候选对应的全局恢复方案，优先沿用当前派驻，并选择能让全局恢复方案保留更多售卖干员、且最终派驻可供后续任务直接售卖的候选。全局结果仍相同时，按稳定候选顺序决胜。
 
 干员缓存保存在 `debug/record/SellProductOwnedOperators.json`，按哈希 UID 隔离：
 
@@ -126,13 +135,13 @@ SellProduct{LocationId}                              （识别/进入目标据�
 - 规划与选人只基于完整快照中的真实拥有集合，不会用不完整观察做理论最优猜测。
 - 列表扫描到底后，若刷新或重新规划导致目标变化，Pipeline 可关闭并重新打开列表执行一次新方案。
 - Pipeline 必须识别列表、点击候选、识别“派驻”按钮并确认返回据点后，才认为切换成功。
-- 若“派驻”后弹出候选已在其他据点派驻的确认框，Pipeline 会取消抢占；Go 将该候选加入本次任务的全局临时排除集合，清理未确认分配并重新规划。排除集合会在下次任务初始化时重置。
+- 若“派驻”后弹出候选已在其他据点派驻的确认框，Pipeline 用 `And` 同时识别弹窗、Go 来源分类和对应按钮。来源据点在本次任务已启用时点击确认，将候选调至当前据点；来源据点未启用或无法可靠识别时点击取消，并将候选加入本次任务的全局临时排除集合后重新规划。排除集合会在下次任务初始化时重置。
 
-恢复时需要保证同一干员不能同时占用多个据点。Go 按以下顺序分配：
+售后生产派驻需要保证同一干员不能同时占用多个据点。Go 按以下顺序分配：
 
 1. 最大化能够恢复的据点数量；
 2. 覆盖数相同时，尽量保留各据点售前已经派驻的售卖干员，减少无意义切换；
-3. 本次保留数量相同时，尽量让最终派驻仍属于对应据点的最高售卖加成档，使后续任务无需再次切换；
+3. 本次保留数量相同时，尽量让最终派驻仍属于对应据点的最高加成档（同时满足售卖和恢复），使后续任务无需再次切换；
 4. 后续可沿用数量也相同时，选择候选 `Priority` 总和更小的方案；
 5. 已确认的 `location -> operator` 立即锁定，后续据点不能重复分配该干员。
 
@@ -148,7 +157,7 @@ SellProduct{LocationId}                              （识别/进入目标据�
 
 任务配置提供一个默认关闭的优先售卖开关，开启后展开 6 个直接调整该列表的优先级槽位。已配置物品按槽位 1 至 6 移到默认列表最前面；不属于当前据点的物品自动跳过，同一物品重复配置时只保留最靠前的槽位，其余物品继续保持上述默认顺序。
 
-任务运行期间，确认进入每个据点后，UI 会输出该据点的售卖干员目标、售卖后恢复目标、实际计划售卖顺序、因本次任务已确认缺货而排除的物品，以及适用的保留规则；未列出的物品默认全部售卖。随后在状态确认后显示干员实际沿用或切换结果、当前货品和交易完成状态。当前据点新确认物品缺货时，会立即显示物品名与据点名。干员已在其他据点派驻时显示被排除的候选和重新规划原因；完整扫描产生新方案时显示据点、用途和新干员。售卖干员不可用、干员扫描失败以及恢复干员不可用并跳过恢复时也会显示对应结果。任务内的 UI 提示均使用当前客户端语言。
+任务运行期间，确认进入每个据点后，UI 会输出该据点的售卖干员目标、售后生产派驻目标、实际计划售卖顺序、因本次任务已确认缺货而排除的物品，以及适用的保留规则；未列出的物品默认全部售卖。随后在状态确认后显示干员实际沿用或切换结果、当前货品和交易完成状态。当前据点新确认物品缺货时，会立即显示物品名与据点名。干员已在其他据点派驻时会显示来源据点是否由本次任务管理；受保护候选被排除并重新规划时也会记录原因。完整扫描产生新方案时显示据点、用途和新干员。售卖干员不可用、干员扫描失败以及售后生产干员不可用并跳过派驻时也会显示对应结果。任务内的 UI 提示均使用当前客户端语言。
 
 未解锁货品不会出现在当前界面，因此会自然跳过。售卖没有固定次数限制，每轮流程如下：
 
@@ -161,8 +170,8 @@ SellProductSellLoop                                  （不限次数的售卖循
                  └─ [Anchor]SellProductCommitPriorityItem （回到售卖界面后提交）
                       └─ [Anchor]SellProductBetterSliding  （应用保留规则）
                            └─ SellProduct{LocationId}BetterSliding （设置可售数量）
-                                └─ SellProductSell / SellProductSkipToNextSellLoop
-                                     （交易或因保留量跳过）
+                                 └─ SellProductSell / SellProductSellThenLoop / SellProductSkipToNextSellLoop
+                                      （全部售出、按保留数量交易或因保留量跳过）
                                      └─ SellProductSellLoop
                                           （继续下一候选，直到满足结束条件）
 ```
