@@ -8,8 +8,8 @@ This document describes how to use common nodes related to **MapTracker**.
 
 ### Key Concepts
 
-1.  **Map Name**: Each major map in the game has a unique name, for example, "map01_lv001". Here, "map01" indicates the area is "Valley IV", and "lv001" indicates the sub-area is "Hub Zone". Please refer to `/assets/resource/image/MapTracker/map` to obtain all map names and images (these images have been scaled to fit the minimap UI in a 720P resolution game). `map_name` must **exactly match** the filename in this directory (excluding the `.png` extension).
-2.  **Coordinate System**: The coordinates used by MapTracker are the pixel coordinates $(x, y)$ of the aforementioned major map image, with the top-left corner of the image as the origin $(0, 0)$.
+1. **Map Name**: Each major map in the game has a unique name, for example, "map01_lv001". Here, "map01" indicates the area is "Valley IV", and "lv001" indicates the sub-area is "Hub Zone". Please refer to `/assets/resource/image/MapTracker/map` to obtain all map names and images (these images have been scaled to fit the minimap UI in a 720P resolution game). `map_name` must **exactly match** the filename in this directory (excluding the `.png` extension).
+2. **Coordinate System**: The coordinates used by MapTracker are the pixel coordinates $(x, y)$ of the aforementioned major map image, with the top-left corner of the image as the origin $(0, 0)$.
 
 > [!TIP]
 >
@@ -40,11 +40,13 @@ Optional parameters:
 - `path_trim`: Boolean, default `false`. Whether to select the waypoint closest to the character as the actual starting point when pathfinding begins (waypoints before this point will be automatically skipped); otherwise, it always starts moving from the first waypoint.
 - `fine_approach`: String, default `"FinalTarget"`. Controls when to enable fine approach (reaching the target point with extreme precision). Optional values:
 
-    | Option Value    | Meaning                                                       | Applicable Scenario                                                                          |
+    | Option Value | Meaning | Applicable Scenario |
     | --------------- | ------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-    | `"FinalTarget"` | Enable fine approach only at the final target point (default) | Most scenarios                                                                               |
-    | `"AllTargets"`  | Enable fine approach at every target point                    | When extremely high precision is required for transit points (e.g., crossing narrow bridges) |
-    | `"Never"`       | Disable fine approach                                         | /                                                                                            |
+    | `"FinalTarget"` | Enable fine approach only at the final target point (default) | Most scenarios |
+    | `"AllTargets"` | Enable fine approach at every target point | When extremely high precision is required for transit points (e.g., crossing narrow bridges) |
+    | `"Never"` | Disable fine approach | / |
+
+    The fine approach first brings the player to a stop, then repeats the process of "recognize the location → perform one short displacement along the camera's forward/backward/left/right axes" until the player is close enough to the target point. The camera is never rotated during this process, so the player's orientation is undetermined when it ends. If a specific orientation is needed, use `on_finish` together with [MapTrackerToward](#action-maptrackertoward) to adjust it.
 
 - `on_finish`: Pipeline node object, defaults to not filled. Executes this Pipeline node once after successful pathfinding. For an example, refer to the Tip section of [MapTrackerToward](#action-maptrackertoward). The `pre_delay` and `post_delay` of the filled node default to `0` milliseconds if omitted.
 
@@ -131,12 +133,12 @@ Optional parameters:
 
 - `zipline_policy`: String, default `"Never"`. Controls the aggressiveness of using ziplines. Optional values:
 
-    | Option Value   | Meaning                                   | Applicable Scenario                                        |
+    | Option Value | Meaning | Applicable Scenario |
     | -------------- | ----------------------------------------- | ---------------------------------------------------------- |
-    | `"Never"`      | Never use ziplines (default)              | Most scenarios                                             |
-    | `"Lazy"`       | Use ziplines only in extreme cases        | When needing to cross impassable areas like water          |
-    | `"Active"`     | Actively use ziplines like a human player | When there are many impassable areas and the route is long |
-    | `"Aggressive"` | Use ziplines very aggressively            | Generally not recommended                                  |
+    | `"Never"` | Never use ziplines (default) | Most scenarios |
+    | `"Lazy"` | Use ziplines only in extreme cases | When needing to cross impassable areas like water |
+    | `"Active"` | Actively use ziplines like a human player | When there are many impassable areas and the route is long |
+    | `"Aggressive"` | Use ziplines very aggressively | Generally not recommended |
 
 - Other parameters: Supports supplementing parameters of [MapTrackerMove](#action-maptrackermove), which will be passed through to the final movement process, such as `fine_approach`, `arrival_timeout`, `stuck_mitigators`, etc.
 
@@ -485,44 +487,30 @@ Required parameters:
 
 ## Tool Description
 
-We provide a GUI tool script located at `/tools/map_tracker/map_tracker_editor.py`. It supports the following basic functions:
+We provide a **Web UI-based visual development tool**. The program entry is `tools/map_tracker/map_tracker_master.py`. Almost everything you need is available inside, including but not limited to:
 
 - **Create Move Node**: Visually draw [MapTrackerMove](#action-maptrackermove) waypoints on the map.
 - **Create AssertLocation Node**: Select a rectangular area on the map for [MapTrackerAssertLocation](#recognition-maptrackerassertlocation).
 - **Edit Existing Node (Import from Pipeline JSON)**: Load the above two types of nodes from an existing pipeline JSON file, make modifications, and save directly to the file!
 
-### Environment Setup and Opening Method
+The tool is designed to be intuitive and includes rich built-in guidance. You will find it highly usable!
 
-Prepare a **Python runtime environment** and **install the dependency libraries** using the following command:
+### Try the Tool Now
 
-```bash
-pip install opencv-python maafw
-```
-
-Then run the program using Python (the working directory needs to be the project root directory):
+**How do I get started?** We recommend running the tool with the [uv](https://docs.astral.sh/uv/) package manager, which prepares the required dependencies automatically:
 
 ```bash
-python tools/map_tracker/map_tracker_editor.py
+uv run tools/map_tracker/map_tracker_master.py
 ```
 
-### Usage Introduction
+After the tool starts, it opens a browser page automatically. If it does not, check the URL printed in the terminal (usually <http://127.0.0.1:8060/web/> ) and open it in your browser.
 
-🖱**Mouse Operations**: The left button can add, move, or select waypoints; the right button can drag the map; the scroll wheel can be used for zooming.
+<details>
+<summary>If you prefer not to use uv, you can install dependencies and start manually…</summary>
 
-📷**Path Recording**: In the path editing page, there are two modes for recording paths: **Loop (continuous recording) and Once (single-point recording) modes**. In Loop mode, pressing the record button will continuously record the player's waypoints; in Once mode, pressing the record button each time will only record one waypoint.
+```bash
+pip install -r tools/map_tracker/requirements.txt
+python tools/map_tracker/map_tracker_master.py
+```
 
-> [!NOTE]
->
-> To use the path recording function, you need to ensure that you have successfully set up the entire environment according to the project's quick start guide.
->
-> The path recording function supports both Win32 and ADB controllers (Win32 is prioritized). The program will automatically detect the currently available game window and connect automatically, without manual selection.
-
-↕️**Layer Switching**: Some maps have layer functionality. You can view maps of different layers in the Tiers List panel on the left.
-
-👀**Point Property Viewing**: Clicking on a waypoint allows you to view its coordinate information and perform operations like deleting or copying coordinates.
-
-✅**Finish Editing**: In the sidebar of any editing page, clicking the Finish button allows you to choose the export method.
-
-> [!TIP]
->
-> If you are editing in the "Edit Existing Node" mode, you can also directly click the Save button to save the changes to the file with one click
+</details>

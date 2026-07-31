@@ -57,15 +57,7 @@
         ],
         "template": "ProtocolSpace/TeamChooseIcon.png",
         "threshold": 0.9,
-        "pre_wait_freezes": {
-            "time": 200,
-            "target": [
-                0,
-                0,
-                100,
-                200
-            ]
-        },
+        "pre_wait_freezes": 200,
         "next": [
             "[JumpBack]ProtocolSpaceTeamChoose",
             "ProtocolSpaceEnterSpaceConfirm"
@@ -188,7 +180,12 @@
             }
         ],
         "pre_wait_freezes": 400,
-        "action": "Click",
+        "action": "Custom",
+        "custom_action": "RepeatUntilNotFoundAction",
+        "custom_action_param": {
+            "action": "Click",
+            "wait_node": "ProtocolSpaceEnterSpaceConfirm"
+        },
         "next": [
             "[JumpBack]SceneWaitLoadingExit",
             "ProtocolSpaceEnterSpaceSuccess"
@@ -404,31 +401,37 @@
             "Node.Action.Succeeded": "找不到开始点"
         }
     },
+    "ProtocolSpaceTouchStartPrompt": {
+        "desc": "触碰提示 OCR",
+        "recognition": "OCR",
+        "roi": [
+            755,
+            330,
+            297,
+            312
+        ],
+        "expected": [
+            "触碰",
+            "觸碰",
+            "Touch",
+            "触れる",
+            "접촉하기"
+        ]
+    },
     "ProtocolSpaceTouchStartTouch": {
         "desc": "判断出现触碰提示，开始触碰",
         "recognition": "And",
         "all_of": [
             "InProtocolSpace",
-            {
-                "recognition": "OCR",
-                "roi": [
-                    755,
-                    330,
-                    297,
-                    312
-                ],
-                "expected": [
-                    "触碰",
-                    "觸碰",
-                    "Touch",
-                    "触れる",
-                    "접촉하기"
-                ]
-            }
+            "ProtocolSpaceTouchStartPrompt"
         ],
         "box_index": 1,
         "action": "Custom",
-        "custom_action": "AutoAltClickAction",
+        "custom_action": "RepeatUntilNotFoundAction",
+        "custom_action_param": {
+            "custom_action": "AutoAltClickAction",
+            "wait_node": "ProtocolSpaceTouchStartPrompt"
+        },
         "next": [
             "ProtocolSpaceFightStartWait"
         ],
@@ -764,7 +767,7 @@
         ],
         "action": "Click",
         "next": [
-            "[JumpBack]SceneWaitLoadingExit",
+            "[JumpBack]SceneWaitBlackScreenLoadingExit",
             "ProtocolSpaceEnterSpaceSuccess",
             "ProtocolSpaceRewardClaimSuccessSanityLowDialog"
         ],

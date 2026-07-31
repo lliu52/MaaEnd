@@ -26,6 +26,15 @@
         "anchor": {
             "SeizeDeliveryJobsAfterEnterWulingJobList": "" // 任务结束，置空锚点以防止误用
         },
+        "post_wait_freezes": {
+            "time": 500,
+            "target": [
+                400,
+                180,
+                160,
+                120
+            ]
+        },
         "next": [
             "SeizeDeliveryJobsRunDeparture"
         ]
@@ -35,7 +44,8 @@
         "action": "Custom",
         "custom_action": "SeizeDeliveryJobsDepartureAction",
         "custom_action_param": {
-            "map_name_regex": "map02_lv002|map02_lv005", // 所有可用的送货地图名称（后续增加新地区需要更新此值）
+            "map_name_regex": "^(map02_lv002|map02_lv005)$", // 所有可用的送货地图名称（后续增加新地区需要更新此值）
+            // 更新此值需要同时更新 assets\tasks\SeizeDeliveryJobs.json 中对应的值
             "zipline_policy": "Lazy", // 默认不优先使用滑索（可以覆写为 "Active"）
             "is_retry": false
         },
@@ -57,7 +67,7 @@
         ]
     },
     "SeizeDeliveryJobsCancelTracking": {
-        "desc": "在目的地地图界面，取消任务追踪以防止追踪标志干扰后续识别",
+        "desc": "在当前任务地图界面，取消任务追踪以防止追踪标志干扰后续识别",
         "enabled": true,
         "recognition": "TemplateMatch",
         "roi": [
@@ -74,7 +84,7 @@
             // 后续由 Go 内部逻辑来进行后续流程控制
         ],
         "focus": {
-            "Node.Action.Starting": "成功识别目的地位置"
+            "Node.Action.Starting": "取消任务追踪"
         }
     },
     "SeizeDeliveryJobsSubmitEntry": {

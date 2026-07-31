@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
 import test from "node:test";
 
-import {sellProductLocations} from "./model.mjs";
+import {sellProductLocationsNewestFirst} from "./model.mjs";
 import {
     buildLocationOperatorOrder,
     buildSelectionItems,
@@ -23,9 +23,10 @@ test("SellProduct selection data contains only valid stable references", () => {
     const data = sellProductSelectionData;
     assert.deepEqual(
         data.location_order,
-        sellProductLocations.map((location) => location.LocationId),
+        sellProductLocationsNewestFirst.map((location) => location.LocationId),
     );
     for (const item of Object.values(data.items)) {
+        assert.equal("unit_price" in item, false);
         assert.deepEqual(Object.keys(item.names), [
             "zh_cn",
             "zh_tw",
@@ -35,6 +36,7 @@ test("SellProduct selection data contains only valid stable references", () => {
         ]);
     }
     for (const operator of Object.values(data.operators)) {
+        assert.equal("cache_name" in operator, false);
         assert.deepEqual(Object.keys(operator.names), [
             "zh_cn",
             "zh_tw",
@@ -53,8 +55,10 @@ test("SellProduct selection data contains only valid stable references", () => {
             "ja_jp",
             "ko_kr",
         ]);
-        for (const itemID of location.item_order) {
-            assert.ok(data.items[itemID], `${locationName} references missing item ${itemID}`);
+        for (const item of location.items) {
+            assert.ok(data.items[item.item_id], `${locationName} references missing item ${item.item_id}`);
+            assert.ok(item.rarity > 0, `${locationName} item ${item.item_id} has invalid rarity`);
+            assert.ok(item.unit_price > 0, `${locationName} item ${item.item_id} has invalid unit price`);
         }
         for (const operatorName of [
             ...location.target_operators.map((operator) => operator.name),
@@ -75,12 +79,15 @@ test("SellProduct temporary activity items stay recognizable but are not selecta
         assert.ok(sellProductSelectionData.items[itemID]);
         assert.equal(selectableIDs.has(itemID), false);
         for (const location of Object.values(sellProductSelectionData.locations)) {
-            assert.equal(location.item_order.includes(itemID), false);
+            assert.equal(
+                location.items.some((item) => item.item_id === itemID),
+                false,
+            );
         }
     }
 });
 
-test("SellProduct generated item order merges prosperity levels and sorts by rarity then price", () => {
+test("SellProduct generated location items merge prosperity levels without applying a strategy order", () => {
     const data = {
         settlements: {
             test: {
@@ -103,10 +110,10 @@ test("SellProduct generated item order merges prosperity levels and sorts by rar
         },
     };
     const result = buildSelectionItems(data, [{SettlementId: "test", LocationId: "Test"}]);
-    assert.deepEqual(result.locationItemOrder.Test, [
-        "high_expensive",
-        "high_cheap",
-        "low",
+    assert.deepEqual(result.locationItems.Test, [
+        {item_id: "low", rarity: 2, unit_price: 110},
+        {item_id: "high_cheap", rarity: 3, unit_price: 80},
+        {item_id: "high_expensive", rarity: 3, unit_price: 120},
     ]);
     assert.deepEqual(result.items.low.names, {
         zh_cn: "低级",
@@ -118,7 +125,7 @@ test("SellProduct generated item order merges prosperity levels and sorts by rar
     assert.ok(result.items.event);
 });
 
-test("SellProduct generated target operators prioritize combined profit bonuses", () => {
+test("SellProduct generated target operators prioritize prosperity before trade profit", () => {
     const both = {charId: "chr_0003_both", name: {CN: "双加成", EN: "Both"}};
     const money = {charId: "chr_0002_money", name: {CN: "收益", EN: "Money"}};
     const exp = {charId: "chr_0001_exp", name: {CN: "经验", EN: "Exp"}};
@@ -154,14 +161,17 @@ test("SellProduct generated target operators prioritize combined profit bonuses"
         {
             name: "Both",
             bonus_tier: 0,
-        },
-        {
-            name: "Money",
-            bonus_tier: 1,
+            outpost_prosperity_max_bonus_tier: 0,
         },
         {
             name: "Exp",
+            bonus_tier: 1,
+            outpost_prosperity_max_bonus_tier: 1,
+        },
+        {
+            name: "Money",
             bonus_tier: 2,
+            outpost_prosperity_max_bonus_tier: 0,
         },
     ]);
 });
@@ -198,15 +208,18 @@ test("SellProduct generated operator order follows feature matches then descendi
     assert.deepEqual(order, [
         {
             name: "Most",
-            bonus_tier: 1,
+            bonus_tier: 2,
+            outpost_prosperity_max_bonus_tier: 0,
         },
         {
             name: "Higher",
-            bonus_tier: 1,
+            bonus_tier: 2,
+            outpost_prosperity_max_bonus_tier: 0,
         },
         {
             name: "Lower",
-            bonus_tier: 1,
+            bonus_tier: 2,
+            outpost_prosperity_max_bonus_tier: 0,
         },
     ]);
 });

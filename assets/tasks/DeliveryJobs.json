@@ -13,9 +13,12 @@
                 "DeliveryJobsPackCargoOnly"
             ],
             "controller": [
-                "Win32-Front",
                 "ADB",
+                "CloudADB",
+                "MacOS-Background",
+                "MacOS-Front",
                 "PlayCover",
+                "Win32-Front",
                 "Wlroots"
             ],
             "group": [
@@ -335,6 +338,15 @@
                     "pipeline_override": {
                         "DeliveryJobsSelectItemToFillWuling": {
                             "template": "DeliveryJobs/Jincao.png"
+                        }
+                    }
+                },
+                {
+                    "name": "息壤",
+                    "label": "$item.Xiranite",
+                    "pipeline_override": {
+                        "DeliveryJobsSelectItemToFillWuling": {
+                            "template": "DeliveryJobs/Xiranite.png"
                         }
                     }
                 }

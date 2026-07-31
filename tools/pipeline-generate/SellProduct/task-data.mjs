@@ -2,7 +2,7 @@
 
 import {createRequire} from "node:module";
 import {sellProductLocations, toPascalCase} from "./model.mjs";
-import {sellProductSelectableItems} from "./selection-data.mjs";
+import {sellProductSelectableItems, sellProductSelectionData} from "./selection-data.mjs";
 
 const require = createRequire(import.meta.url);
 const zhCNLocale = require("../../../assets/locales/interface/zh_cn.json");
@@ -60,9 +60,41 @@ const SETTLEMENT_REGION_MAP = sellProductLocations.reduce((acc, location) => {
     return acc;
 }, {});
 
-const LOCATIONS = sellProductLocations;
+// 每个地区的优先售卖选项只列出该地区至少一个据点可售的物品，并记录最高单价。
+// 下拉选项与游戏货架一致按单价降序排列，同价保持 ITEMS 的稳定来源顺序。
+const ITEM_PRICE_BY_ID = new Map();
+const PRIORITY_ITEM_PRICE_BY_REGION = sellProductLocations.reduce((acc, location) => {
+    acc[location.RegionPrefix] = acc[location.RegionPrefix] || new Map();
+    for (const item of sellProductSelectionData.locations[location.LocationId]?.items || []) {
+        const globalPrevious = ITEM_PRICE_BY_ID.get(item.item_id);
+        if (globalPrevious === undefined || item.unit_price > globalPrevious) {
+            ITEM_PRICE_BY_ID.set(item.item_id, item.unit_price);
+        }
+        const previous = acc[location.RegionPrefix].get(item.item_id);
+        if (previous === undefined || item.unit_price > previous) {
+            acc[location.RegionPrefix].set(item.item_id, item.unit_price);
+        }
+    }
+    return acc;
+}, {});
 
-// 独立保留规则使用所有据点货品的并集，不提供 Auto，且不依赖任何优先级顺位。
+function compareItemsByUnitPrice(priceByItemID) {
+    return (left, right) => priceByItemID.get(right.id) - priceByItemID.get(left.id);
+}
+
+const LOCATIONS = sellProductLocations;
+const REGION_PREFIXES = Object.keys(SETTLEMENT_REGION_MAP);
+const STOCK_MINIMUM_UNIT_PRICE_DEFAULT = 10;
+const TASK_OPTIONS = [
+    "SellProductSchedule",
+    "SellProductOperatorAutoSwitch",
+    "SellProductSelectionStrategy",
+    "SellProductPriorityRules",
+    "SellProductItemReserveRules",
+    ...REGION_PREFIXES.map((regionPrefix) => `${regionPrefix}Sell`),
+];
+
+// 独立保留规则使用所有据点货品的并集，不提供 Auto，并按游戏货架单价顺序展示。
 // 具体货品 case 只通过 attach 注入 itemId；子 input 独占 custom_action_param，
 // 避免 MaaFramework 依次应用选项覆盖时完整替换同名字段。
 function buildReserveItemCases(slot) {
@@ -71,55 +103,175 @@ function buildReserveItemCases(slot) {
             name: "None",
             label: "$task.SellProduct.ReserveNone",
         },
-        ...Object.values(ITEMS).map((item) => ({
-            name: item.name,
-            ...(item.label ? {label: item.label} : {}),
-            option: [`SellProductReserveItem${slot}Value`],
-            pipeline_override: {
-                [`SellProductRegisterReserveRule${slot}`]: {
-                    attach: {
-                        item_id: item.id,
+        ...Object.values(ITEMS)
+            .sort(compareItemsByUnitPrice(ITEM_PRICE_BY_ID))
+            .map((item) => ({
+                name: item.name,
+                ...(item.label ? {label: item.label} : {}),
+                option: [`SellProductReserveItem${slot}Mode`],
+                pipeline_override: {
+                    [`SellProductRegisterReserveRule${slot}`]: {
+                        attach: {
+                            item_id: item.id,
+                        },
                     },
                 },
-            },
-        })),
+            })),
     ];
 }
 
-// 用户指定的六个槽位直接调整生成数据中的动态优先级。
-function buildPriorityItemCases(slot) {
+// 用户通过显式模式选择保留数量或永不售卖；-1 仅作为内部配置哨兵，
+// 不要求用户理解或手动输入特殊数值。
+function buildReserveModeCases(slot) {
+    return [
+        {
+            name: "Quantity",
+            label: "$task.SellProduct.ReserveModeQuantity",
+            option: [`SellProductReserveItem${slot}Value`],
+        },
+        {
+            name: "NeverSell",
+            label: "$task.SellProduct.ReserveModeNeverSell",
+            pipeline_override: {
+                [`SellProductRegisterReserveRule${slot}`]: {
+                    custom_action_param: {
+                        operation: "register",
+                        quantity: -1,
+                    },
+                },
+            },
+        },
+    ];
+}
+
+// 用户指定的六个槽位只调整对应地区的动态优先级。
+function buildPriorityItemCases(regionPrefix, slot) {
+    const priceByItemID = PRIORITY_ITEM_PRICE_BY_REGION[regionPrefix] || new Map();
     return [
         {
             name: "None",
             label: "$task.SellProduct.PriorityNone",
         },
-        ...Object.values(ITEMS).map((item) => ({
-            name: item.name,
-            ...(item.label ? {label: item.label} : {}),
-            pipeline_override: {
-                [`SellProductRegisterPriorityItem${slot}`]: {
-                    custom_action_param: {
-                        operation: "register",
-                        item_id: item.id,
+        ...Object.values(ITEMS)
+            .filter((item) => priceByItemID.has(item.id))
+            .sort(compareItemsByUnitPrice(priceByItemID))
+            .map((item) => ({
+                name: item.name,
+                ...(item.label ? {label: item.label} : {}),
+                pipeline_override: {
+                    [`SellProduct${regionPrefix}RegisterPriorityItem${slot}`]: {
+                        custom_action_param: {
+                            operation: "register",
+                            item_id: item.id,
+                        },
                     },
                 },
-            },
-        })),
+            })),
     ];
 }
 
-function buildPriorityRuleSwitchCases() {
+function buildPriorityRuleSwitchCases(regionPrefixes) {
     return [
         {
             name: "Yes",
             option: [
-                "SellProductPriorityItem1",
-                "SellProductPriorityItem2",
-                "SellProductPriorityItem3",
-                "SellProductPriorityItem4",
-                "SellProductPriorityItem5",
-                "SellProductPriorityItem6",
+                "SellProductOnlyPreferredItems",
+                ...regionPrefixes.map((regionPrefix) => `SellProduct${regionPrefix}PriorityRules`),
             ],
+            pipeline_override: {
+                SellProductConfigurePrioritySession: {
+                    custom_action_param: {
+                        operation: "configure",
+                        enabled: true,
+                    },
+                },
+            },
+        },
+        {name: "No"},
+    ];
+}
+
+function buildSelectionStrategyCases() {
+    return [
+        {
+            name: "Rarity",
+            label: "$task.SellProduct.SelectionStrategyRarity",
+            pipeline_override: {
+                SellProductConfigureSelectionStrategy: {
+                    custom_action_param: {
+                        operation: "configure_strategy",
+                        strategy: "rarity",
+                    },
+                },
+            },
+        },
+        {
+            name: "Price",
+            label: "$task.SellProduct.SelectionStrategyPrice",
+            pipeline_override: {
+                SellProductConfigureSelectionStrategy: {
+                    custom_action_param: {
+                        operation: "configure_strategy",
+                        strategy: "price",
+                    },
+                },
+            },
+        },
+        {
+            name: "Stock",
+            label: "$task.SellProduct.SelectionStrategyStock",
+            option: ["SellProductStockMinimumUnitPrice"],
+            pipeline_override: {
+                SellProductConfigureSelectionStrategy: {
+                    custom_action_param: {
+                        operation: "configure_strategy",
+                        strategy: "stock",
+                        minimum_unit_price: STOCK_MINIMUM_UNIT_PRICE_DEFAULT,
+                    },
+                },
+            },
+        },
+    ];
+}
+
+function buildOnlyPreferredSwitchCases() {
+    return [
+        {
+            name: "Yes",
+            pipeline_override: {
+                SellProductConfigurePrioritySession: {
+                    custom_action_param: {
+                        operation: "configure",
+                        enabled: true,
+                        only_preferred: true,
+                    },
+                },
+            },
+        },
+        {name: "No"},
+    ];
+}
+
+function buildRegionPriorityRuleSwitchCases(regionPrefix) {
+    return [
+        {
+            name: "Yes",
+            option: [
+                `SellProduct${regionPrefix}PriorityItem1`,
+                `SellProduct${regionPrefix}PriorityItem2`,
+                `SellProduct${regionPrefix}PriorityItem3`,
+                `SellProduct${regionPrefix}PriorityItem4`,
+                `SellProduct${regionPrefix}PriorityItem5`,
+                `SellProduct${regionPrefix}PriorityItem6`,
+            ],
+            pipeline_override: {
+                [`SellProduct${regionPrefix}InitializePrioritySession`]: {
+                    custom_action_param: {
+                        operation: "reset_preferred",
+                        enabled: true,
+                    },
+                },
+            },
         },
         {name: "No"},
     ];
@@ -201,29 +353,49 @@ function buildOperatorRefreshModeCases(locations) {
 }
 
 const OPERATOR_REFRESH_MODE_CASES = buildOperatorRefreshModeCases(LOCATIONS);
-const PRIORITY_RULE_SWITCH_CASES = buildPriorityRuleSwitchCases();
+const SELECTION_STRATEGY_CASES = buildSelectionStrategyCases();
+const PRIORITY_RULE_SWITCH_CASES = buildPriorityRuleSwitchCases(REGION_PREFIXES);
+const ONLY_PREFERRED_SWITCH_CASES = buildOnlyPreferredSwitchCases();
 const RESERVE_RULE_SWITCH_CASES = buildReserveRuleSwitchCases();
 
+const SLOT_NUMBERS = [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+];
+
+// 槽位选项按编号展开为模板占位字段；未启用行提供空数组，由任务合并去重保留首个非空版本。
+function spreadSlotCases(prefix, enabled, build) {
+    return Object.fromEntries(
+        SLOT_NUMBERS.map((slot) => [
+            `${prefix}${slot}`,
+            enabled ? build(slot) : [],
+        ]),
+    );
+}
+
 export const sellProductTaskRows = LOCATIONS.map((loc, index) => {
+    const firstInRegion = LOCATIONS.findIndex((entry) => entry.RegionPrefix === loc.RegionPrefix) === index;
     return {
         RegionPrefix: loc.RegionPrefix,
         SellOptions: SETTLEMENT_REGION_MAP[loc.RegionPrefix],
+        TaskOptions: index === 0 ? TASK_OPTIONS : [],
         LocationId: loc.LocationId,
+        OnlyPreferredSwitchCases: index === 0 ? ONLY_PREFERRED_SWITCH_CASES : [],
         OperatorRefreshModeCases: index === 0 ? OPERATOR_REFRESH_MODE_CASES : [],
-        PriorityItemCases1: index === 0 ? buildPriorityItemCases(1) : [],
-        PriorityItemCases2: index === 0 ? buildPriorityItemCases(2) : [],
-        PriorityItemCases3: index === 0 ? buildPriorityItemCases(3) : [],
-        PriorityItemCases4: index === 0 ? buildPriorityItemCases(4) : [],
-        PriorityItemCases5: index === 0 ? buildPriorityItemCases(5) : [],
-        PriorityItemCases6: index === 0 ? buildPriorityItemCases(6) : [],
+        StockMinimumUnitPriceDefault: String(STOCK_MINIMUM_UNIT_PRICE_DEFAULT),
+        SelectionStrategyCases: index === 0 ? SELECTION_STRATEGY_CASES : [],
+        ...spreadSlotCases("PriorityItemCases", firstInRegion, (slot) =>
+            buildPriorityItemCases(loc.RegionPrefix, slot),
+        ),
         PriorityRuleSwitchCases: index === 0 ? PRIORITY_RULE_SWITCH_CASES : [],
+        RegionPriorityRuleSwitchCases: firstInRegion ? buildRegionPriorityRuleSwitchCases(loc.RegionPrefix) : [],
         ReserveRuleSwitchCases: index === 0 ? RESERVE_RULE_SWITCH_CASES : [],
-        ReserveItemCases1: index === 0 ? buildReserveItemCases(1) : [],
-        ReserveItemCases2: index === 0 ? buildReserveItemCases(2) : [],
-        ReserveItemCases3: index === 0 ? buildReserveItemCases(3) : [],
-        ReserveItemCases4: index === 0 ? buildReserveItemCases(4) : [],
-        ReserveItemCases5: index === 0 ? buildReserveItemCases(5) : [],
-        ReserveItemCases6: index === 0 ? buildReserveItemCases(6) : [],
+        ...spreadSlotCases("ReserveItemCases", index === 0, buildReserveItemCases),
+        ...spreadSlotCases("ReserveModeCases", index === 0, buildReserveModeCases),
     };
 });
 

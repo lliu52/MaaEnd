@@ -43,11 +43,13 @@
 
 - `fine_approach`: 字符串，默认 `"FinalTarget"`。控制何时启用精细进近（极精确地到达目标点），可选值：
 
-    | 选项值          | 含义                                   | 适用场景                                       |
+    | 选项值 | 含义 | 适用场景 |
     | --------------- | -------------------------------------- | ---------------------------------------------- |
-    | `"FinalTarget"` | 仅在最后一个目标点启用精细进近（默认） | 大多数场景                                     |
-    | `"AllTargets"`  | 在每一个目标点都启用精细进近           | 对途径点的精度要求极高时（例如经过狭窄桥梁时） |
-    | `"Never"`       | 不启用精细进近                         | /                                              |
+    | `"FinalTarget"` | 仅在最后一个目标点启用精细进近（默认） | 大多数场景 |
+    | `"AllTargets"` | 在每一个目标点都启用精细进近 | 对途径点的精度要求极高时（例如经过狭窄桥梁时） |
+    | `"Never"` | 不启用精细进近 | / |
+
+    精细进近会先让玩家停下，随后重复“识别位置 → 沿着视角的前后左右方向做一次短促位移”的过程，直到玩家足够接近目标点。这一过程中不会转动视角，因此结束时玩家的朝向是不确定的，如有需要请使用 `on_finish` 配合 [MapTrackerToward](#action-maptrackertoward) 来调整朝向。
 
 - `on_finish`: Pipeline 节点对象，默认不填。寻路成功后执行一次该 Pipeline 节点。有关示例可参见 [MapTrackerToward](#action-maptrackertoward) 的 Tip 部分。所填节点的 `pre_delay` 和 `post_delay` 在缺省时默认为 `0` 毫秒。
 
@@ -145,12 +147,12 @@
 
 - `zipline_policy`: 字符串，默认 `"Never"`。控制使用滑索的积极程度。可选值：
 
-    | 选项值         | 含义                       | 适用场景                     |
+    | 选项值 | 含义 | 适用场景 |
     | -------------- | -------------------------- | ---------------------------- |
-    | `"Never"`      | 始终不使用滑索（默认）     | 大多数场景                   |
-    | `"Lazy"`       | 仅在极端情况下使用滑索     | 需要跨越水域等不可通行区域时 |
-    | `"Active"`     | 像人类玩家一样主动使用滑索 | 不可通行区域较多且路程较长时 |
-    | `"Aggressive"` | 非常积极地使用滑索         | 一般不推荐                   |
+    | `"Never"` | 始终不使用滑索（默认） | 大多数场景 |
+    | `"Lazy"` | 仅在极端情况下使用滑索 | 需要跨越水域等不可通行区域时 |
+    | `"Active"` | 像人类玩家一样主动使用滑索 | 不可通行区域较多且路程较长时 |
+    | `"Aggressive"` | 非常积极地使用滑索 | 一般不推荐 |
 
 - 其他参数：支持补充填写 [MapTrackerMove](#action-maptrackermove) 的各个参数，这会透传给最终的移动过程，例如 `fine_approach`、`arrival_timeout`、`stuck_mitigators` 等。
 
@@ -512,44 +514,30 @@
 
 ## 工具说明
 
-我们提供一个 GUI 工具脚本，位于 `/tools/map_tracker/map_tracker_editor.py`。它支持以下基本功能：
+我们提供一个**基于 Web UI 的可视化开发工具**，程序入口位于 `tools/map_tracker/map_tracker_master.py`。您需要的几乎所有功能都可以在里面找到，包括但不限于：
 
 - **创建路径（Create Move Node）**：在地图上可视化地绘制 [MapTrackerMove](#action-maptrackermove) 路径点。
 - **创建位置判断节点（Create AssertLocation Node）**：在地图上框选一个用于 [MapTrackerAssertLocation](#recognition-maptrackerassertlocation) 的矩形区域。
 - **编辑已有节点（Import from Pipeline JSON）**：从现有的 pipeline JSON 文件中加载上述两种节点，修改后可以直接保存到文件！
 
-### 环境配置和打开办法
+此工具的交互设计十分人性化，并且内置了丰富的指引。相信您在使用过程中会觉得好用到爆炸！
 
-准备好 **Python 运行环境**，并通过下面的命令**安装依赖库**：
+### 立即体验工具
 
-```bash
-pip install opencv-python maafw
-```
-
-随后使用 Python 运行程序即可（工作目录需要是项目根目录）：
+**如何开始使用？** 推荐您使用 [uv](https://docs.astral.sh/uv/) 依赖管理器直接运行工具，它会自动准备所需的依赖：
 
 ```bash
-python tools/map_tracker/map_tracker_editor.py
+uv run tools/map_tracker/map_tracker_master.py
 ```
 
-### 使用方式介绍
+工具启动后会自动打开浏览器页面。如果没有自动打开，您可以人工查看终端输出的 URL 地址（通常是 <http://127.0.0.1:8060/web/> ）并在浏览器中访问即可。
 
-🖱**鼠标操作**：左键可以添加、移动或选中路径点；右键可以拖拽地图；滚轮可以用于缩放。
+<details>
+<summary>如果您不想使用 uv，也可以手动安装依赖并启动……</summary>
 
-📷**路径录制**：在路径编辑页面中，提供两种录制路径的模式，分别是 **Loop（持续录制）和 Once（单次打点）模式**。在 Loop 模式下，按下录制按钮就会持续录制玩家的路径点；在 Once 模式下，每次按下录制按钮只会录制一个路径点。
+```bash
+pip install -r tools/map_tracker/requirements.txt
+python tools/map_tracker/map_tracker_master.py
+```
 
-> [!NOTE]
->
-> 要想使用路径录制功能，您需要确保您已按照本项目的快速开始指南成功搭建了整个环境。
->
-> 路径录制功能支持 Win32 和 ADB 两种控制器（优先采用 Win32）。程序会自动检测当前可用的游戏窗口并自动进行连接，无需手动选择。
-
-↕️**层级切换**：部分地图具有层级功能，您可以在左侧的 Tiers List 面板中查看不同层级的地图。
-
-👀**点位属性查看**：单击一个路径点，可以查看它的坐标信息，并且可以进行删除和复制坐标的操作。
-
-✅**完成编辑**：在任意编辑页面的侧边栏中，点击 Finish 按钮可以选择导出方式。
-
-> [!TIP]
->
-> 如果您是在“编辑已有节点”模式下进行编辑的，那么您也可以直接点击 Save 按钮来将更改一键保存到文件中！
+</details>
