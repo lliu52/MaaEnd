@@ -458,6 +458,7 @@ jobs:
     needs: [meta, package_linux_tarball, package_macos_dmg, package_win_zip, changelog]
     runs-on: ubuntu-latest
     permissions:
+      actions: write
       contents: write
     steps:
       - uses: actions/download-artifact@v7
