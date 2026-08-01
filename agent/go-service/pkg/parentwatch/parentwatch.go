@@ -14,6 +14,7 @@ package parentwatch
 
 import (
 	"os"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -22,8 +23,29 @@ import (
 // PollInterval 是父进程存活检测的默认轮询间隔。
 const PollInterval = 1 * time.Second
 
+// ExitHandlerTimeout bounds cleanup work when the parent process disappears.
+// The parent is already gone at this point, so the Agent must not remain alive
+// indefinitely because a network-backed handler is stuck.
+const ExitHandlerTimeout = 12 * time.Second
+
 // logComponent 是本包统一的 zerolog `component` 字段值。
 const logComponent = "parent-watcher"
+
+var (
+	exitHandlersMu sync.Mutex
+	exitHandlers   []func()
+)
+
+// RegisterExitHandler adds bounded best-effort cleanup that runs before the
+// Agent exits after losing its parent process.
+func RegisterExitHandler(handler func()) {
+	if handler == nil {
+		return
+	}
+	exitHandlersMu.Lock()
+	exitHandlers = append(exitHandlers, handler)
+	exitHandlersMu.Unlock()
+}
 
 // Start 启动父进程监视器。
 // 进程启动时获取父进程 PID 并打开句柄（Windows）/记录 PID（POSIX），
@@ -78,8 +100,35 @@ func runLoop(w watcher, parentPID int) {
 				Str("component", logComponent).
 				Int("parent_pid", parentPID).
 				Msg("parent process has exited; shutting down")
+			runExitHandlers()
 			os.Exit(0)
 		}
+	}
+}
+
+func runExitHandlers() {
+	exitHandlersMu.Lock()
+	handlers := append([]func(){}, exitHandlers...)
+	exitHandlersMu.Unlock()
+	if len(handlers) == 0 {
+		return
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for _, handler := range handlers {
+			handler()
+		}
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(ExitHandlerTimeout):
+		log.Warn().
+			Str("component", logComponent).
+			Dur("timeout", ExitHandlerTimeout).
+			Msg("parent exit handlers timed out")
 	}
 }
 

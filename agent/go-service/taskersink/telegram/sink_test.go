@@ -13,55 +13,49 @@ import (
 
 func TestFormatRunSummary(t *testing.T) {
 	t.Parallel()
-
-	tests := []struct {
-		name     string
-		summary  runSummary
-		expected []string
-	}{
-		{
-			name:     "all succeeded",
-			summary:  runSummary{total: 3, succeeded: 3},
-			expected: []string{"✅ MAA 运行完成", "任务成功 3/3"},
-		},
-		{
-			name: "includes failed task log",
-			summary: runSummary{
-				total:     3,
-				succeeded: 2,
-				failed: []failedTask{
-					{entry: "DailyRewardStart", log: "最后节点：DailyRewardClaim"},
-				},
-			},
-			expected: []string{
-				"❌ MAA 运行完成",
-				"任务成功 2/3",
-				"❌ DailyRewardStart",
-				"日志：最后节点：DailyRewardClaim",
-			},
-		},
+	summary := runSummary{
+		total: 3, succeeded: 2,
+		failed: []failedTask{{entry: "DailyRewardStart", log: "最后节点：DailyRewardClaim"}},
 	}
+	message := formatRunSummary(summary)
+	for _, expected := range []string{"❌ MAA 运行完成", "任务成功 2/3", "❌ DailyRewardStart", "日志：最后节点：DailyRewardClaim"} {
+		if !strings.Contains(message, expected) {
+			t.Errorf("message does not contain %q:\n%s", expected, message)
+		}
+	}
+}
 
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			message := formatRunSummary(test.summary)
-			for _, expected := range test.expected {
-				if !strings.Contains(message, expected) {
-					t.Errorf("message does not contain %q:\n%s", expected, message)
-				}
-			}
-		})
+func TestFailureUsesTrackedNodeWithoutReverseQuery(t *testing.T) {
+	t.Parallel()
+	sink := testSink()
+	task := maa.TaskerTaskDetail{TaskID: 7, Entry: "SellProduct"}
+	sink.OnTaskerTask(nil, maa.EventStatusStarting, task)
+	_ = receiveNotification(t, sink.queue)
+	sink.OnNodePipelineNode(nil, maa.EventStatusStarting, maa.NodePipelineNodeDetail{TaskID: 7, Name: "SellProductConfirm"})
+	sink.OnTaskerTask(nil, maa.EventStatusFailed, task)
+
+	if got := sink.summary.failed[0].log; got != "最后节点：SellProductConfirm" {
+		t.Fatalf("failure log = %q", got)
+	}
+}
+
+func TestPretaskDoesNotConsumeTaskPlan(t *testing.T) {
+	t.Parallel()
+	sink := testSink()
+	sink.planTemplate = []plannedTask{{name: "售卖产品", state: taskPending}}
+	sink.OnTaskerTask(nil, maa.EventStatusStarting, maa.TaskerTaskDetail{TaskID: 1, Entry: "__PRETASK__WakeGame"})
+	if sink.summary.active {
+		t.Fatal("pretask unexpectedly started a Telegram run")
+	}
+	sink.OnTaskerTask(nil, maa.EventStatusStarting, maa.TaskerTaskDetail{TaskID: 2, Entry: "SellProduct"})
+	if sink.summary.tasks[0].taskID != 2 || sink.summary.tasks[0].state != taskRunning {
+		t.Fatalf("task plan = %+v", sink.summary.tasks)
 	}
 }
 
 func TestSinkReportsOneMessagePerRunBoundary(t *testing.T) {
 	t.Parallel()
-
-	sink := &Sink{
-		client: newBotClient(http.DefaultClient, "", Config{}),
-		queue:  make(chan notification, 4),
-	}
+	sink := testSink()
 	finalMessage := make(chan string, 1)
 	sink.sender = func(text string) { finalMessage <- text }
 	first := maa.TaskerTaskDetail{TaskID: 1, Entry: "DailyRewardStart"}
@@ -71,136 +65,132 @@ func TestSinkReportsOneMessagePerRunBoundary(t *testing.T) {
 	if message := receiveNotification(t, sink.queue); message.text != "✅ MAA 开始运行" {
 		t.Fatalf("starting message = %q", message.text)
 	}
-
 	sink.OnTaskerTask(nil, maa.EventStatusSucceeded, first)
 	sink.OnTaskerTask(nil, maa.EventStatusStarting, second)
 	sink.OnTaskerTask(nil, maa.EventStatusFailed, second)
 	sink.OnTaskerTask(nil, maa.EventStatusStarting, maa.TaskerTaskDetail{Entry: "MXU_KILLPROC"})
 
 	summary := receiveText(t, finalMessage)
-	for _, expected := range []string{
-		"❌ MAA 运行完成",
-		"任务成功 1/2",
-		"❌ CreditShoppingMain",
-		"日志：最后节点未知",
-	} {
+	for _, expected := range []string{"❌ MAA 运行完成", "任务成功 1/2", "❌ CreditShoppingMain", "日志：最后节点未知"} {
 		if !strings.Contains(summary, expected) {
 			t.Errorf("summary does not contain %q:\n%s", expected, summary)
 		}
 	}
 }
 
-func TestSummaryWaitsForShutdownTask(t *testing.T) {
+func TestInterruptedSummaryIncludesAllTaskStates(t *testing.T) {
 	t.Parallel()
-
-	sink := &Sink{
-		client: newBotClient(http.DefaultClient, "", Config{}),
-		queue:  make(chan notification, 4),
+	summary := runSummary{tasks: []plannedTask{
+		{name: "领取奖励", state: taskSucceeded},
+		{name: "售卖产品", state: taskFailed, keyInfo: "SellProductConfirm"},
+		{name: "自动囤货", state: taskRunning, keyInfo: "OpenStockpile"},
+		{name: "好友互动", state: taskPending},
+	}}
+	message := formatInterruptedSummary(summary)
+	for _, expected := range []string{
+		"⚠️ MAA 无日志卡死，外部监控即将重启",
+		"✅ 已成功 (1)", "领取奖励",
+		"❌ 已失败 (1)", "售卖产品", "最后节点：SellProductConfirm",
+		"⏳ 执行中 (1)", "自动囤货", "最后节点：OpenStockpile",
+		"⏭ 未执行 (1)", "好友互动",
+	} {
+		if !strings.Contains(message, expected) {
+			t.Errorf("message does not contain %q:\n%s", expected, message)
+		}
 	}
-	finalMessage := make(chan string, 1)
-	sink.sender = func(text string) { finalMessage <- text }
-	first := maa.TaskerTaskDetail{TaskID: 1, Entry: "FirstTask"}
-	second := maa.TaskerTaskDetail{TaskID: 2, Entry: "SecondTask"}
+}
 
-	sink.OnTaskerTask(nil, maa.EventStatusStarting, first)
-	_ = receiveNotification(t, sink.queue)
-	sink.OnTaskerTask(nil, maa.EventStatusSucceeded, first)
-	sink.OnTaskerTask(nil, maa.EventStatusStarting, second)
-	sink.OnTaskerTask(nil, maa.EventStatusSucceeded, second)
+func TestParentExitSendsInterruptedSummaryAndClearsState(t *testing.T) {
+	t.Parallel()
+	statePath := filepath.Join(t.TempDir(), "telegram-run-summary.json")
+	sink := testSink()
+	sink.statePath = statePath
+	sink.summary = runSummary{active: true, tasks: []plannedTask{{name: "自动囤货", state: taskRunning}}}
+	sink.persistSummary(sink.summary)
+	messages := make(chan string, 1)
+	sink.sender = func(text string) { messages <- text }
 
-	select {
-	case item := <-finalMessage:
-		t.Fatalf("received a summary before shutdown: %q", item)
-	case <-time.After(100 * time.Millisecond):
+	sink.onParentExit()
+	if message := receiveText(t, messages); !strings.Contains(message, "⏳ 执行中 (1)") {
+		t.Fatalf("summary = %q", message)
 	}
-
-	sink.OnTaskerTask(nil, maa.EventStatusStarting, maa.TaskerTaskDetail{Entry: "CloseGame"})
-	summary := receiveText(t, finalMessage)
-	if !strings.Contains(summary, "任务成功 2/2") {
-		t.Fatalf("summary = %q", summary)
+	if sink.summary.active {
+		t.Fatal("summary remains active")
+	}
+	if _, err := os.Stat(statePath); !os.IsNotExist(err) {
+		t.Fatalf("summary state was not removed: %v", err)
 	}
 }
 
 func TestShutdownWaitsForFinalMessage(t *testing.T) {
 	t.Parallel()
-
 	sendStarted := make(chan string, 1)
 	releaseSend := make(chan struct{})
-	sink := &Sink{
-		client: newBotClient(http.DefaultClient, "", Config{}),
-		queue:  make(chan notification, 1),
-		summary: runSummary{
-			active:    true,
-			total:     2,
-			succeeded: 1,
-		},
-	}
-	sink.sender = func(text string) {
-		sendStarted <- text
-		<-releaseSend
-	}
+	sink := testSink()
+	sink.summary = runSummary{active: true, total: 2, succeeded: 1}
+	sink.sender = func(text string) { sendStarted <- text; <-releaseSend }
 	finished := make(chan struct{})
 	go func() {
 		sink.OnTaskerTask(nil, maa.EventStatusStarting, maa.TaskerTaskDetail{Entry: "MXU_KILLPROC"})
 		close(finished)
 	}()
 
-	var message string
-	select {
-	case message = <-sendStarted:
-	case <-time.After(3 * time.Second):
-		t.Fatal("timed out waiting for final Telegram send")
-	}
-	if !strings.Contains(message, "任务成功 1/2") {
+	if message := receiveText(t, sendStarted); !strings.Contains(message, "任务成功 1/2") {
 		t.Fatalf("summary = %q", message)
 	}
-
 	select {
 	case <-finished:
 		t.Fatal("shutdown callback returned before Telegram send completed")
 	case <-time.After(100 * time.Millisecond):
 	}
-
 	close(releaseSend)
 	select {
 	case <-finished:
 	case <-time.After(3 * time.Second):
-		t.Fatal("shutdown callback did not return after Telegram send completed")
+		t.Fatal("shutdown callback did not return")
 	}
 }
 
 func TestSummarySurvivesAgentRestart(t *testing.T) {
 	t.Parallel()
-
 	statePath := filepath.Join(t.TempDir(), "telegram-run-summary.json")
-	firstAgent := &Sink{
-		client:    newBotClient(http.DefaultClient, "", Config{}),
-		queue:     make(chan notification, 1),
-		statePath: statePath,
-	}
+	firstAgent := testSink()
+	firstAgent.statePath = statePath
+	firstAgent.planTemplate = []plannedTask{{name: "每日奖励", state: taskPending}, {name: "自动囤货", state: taskPending}}
 	task := maa.TaskerTaskDetail{TaskID: 1, Entry: "DailyRewardStart"}
 	firstAgent.OnTaskerTask(nil, maa.EventStatusStarting, task)
 	_ = receiveNotification(t, firstAgent.queue)
 	firstAgent.OnTaskerTask(nil, maa.EventStatusSucceeded, task)
 
-	secondAgent := &Sink{
-		client:    newBotClient(http.DefaultClient, "", Config{}),
-		queue:     make(chan notification, 1),
-		statePath: statePath,
-	}
+	secondAgent := testSink()
+	secondAgent.statePath = statePath
 	secondAgent.summary = secondAgent.loadSummary()
-	if !secondAgent.summary.active || secondAgent.summary.total != 1 || secondAgent.summary.succeeded != 1 {
+	if !secondAgent.summary.active || secondAgent.summary.tasks[0].state != taskSucceeded || secondAgent.summary.tasks[1].state != taskPending {
 		t.Fatalf("restored summary = %+v", secondAgent.summary)
 	}
+}
 
-	finalMessage := make(chan string, 1)
-	secondAgent.sender = func(text string) { finalMessage <- text }
-	secondAgent.OnTaskerTask(nil, maa.EventStatusStarting, maa.TaskerTaskDetail{Entry: "MXU_KILLPROC"})
-	if message := receiveText(t, finalMessage); !strings.Contains(message, "任务成功 1/1") {
-		t.Fatalf("summary = %q", message)
+func TestLoadTaskPlanFile(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "mxu-MaaEnd.json")
+	data := `{"lastActiveInstanceId":"selected","instances":[{"id":"other","tasks":[]},{"id":"selected","controllerName":"Win32","tasks":[{"taskName":"SellProduct","customName":"售卖产品","enabled":true},{"taskName":"AutoStockpile","enabled":true,"enabledByController":{"Win32":true}},{"taskName":"DisabledForController","enabled":true,"enabledByController":{"Win32":false}},{"taskName":"Disabled","enabled":false},{"taskName":"CloseGame","enabled":true}]}]}`
+	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := os.Stat(statePath); !os.IsNotExist(err) {
-		t.Fatalf("summary state was not removed: %v", err)
+	plan, err := loadTaskPlanFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan) != 2 || plan[0].name != "售卖产品" || plan[1].name != "AutoStockpile" {
+		t.Fatalf("plan = %+v", plan)
+	}
+}
+
+func testSink() *Sink {
+	return &Sink{
+		client:         newBotClient(http.DefaultClient, "", Config{}),
+		queue:          make(chan notification, 8),
+		lastNodeByTask: make(map[uint64]string),
 	}
 }
 

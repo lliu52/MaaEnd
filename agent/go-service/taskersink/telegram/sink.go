@@ -18,8 +18,9 @@ const (
 )
 
 var shutdownTaskEntries = map[string]struct{}{
-	"CloseGame":    {},
-	"MXU_KILLPROC": {},
+	"CloseGame":        {},
+	"MXU_KILLPROC":     {},
+	"__MXU_KILLPROC__": {},
 }
 
 type notification struct {
@@ -31,29 +32,53 @@ type failedTask struct {
 	log   string
 }
 
+type taskState string
+
+const (
+	taskPending   taskState = "pending"
+	taskRunning   taskState = "running"
+	taskSucceeded taskState = "succeeded"
+	taskFailed    taskState = "failed"
+)
+
+type plannedTask struct {
+	name    string
+	entry   string
+	taskID  uint64
+	state   taskState
+	keyInfo string
+}
+
 type runSummary struct {
 	active    bool
 	total     int
 	succeeded int
 	failed    []failedTask
+	tasks     []plannedTask
 }
 
-// Sink reports one start message and one summary for each MaaEnd run.
+// Sink reports run boundaries and persists enough progress to report an
+// interrupted run without querying a potentially wedged Tasker.
 type Sink struct {
 	client *botClient
 	queue  chan notification
 
-	mu         sync.Mutex
-	summary    runSummary
-	sender     func(string)
-	statePath  string
+	mu             sync.Mutex
+	stateMu        sync.Mutex
+	summary        runSummary
+	planTemplate   []plannedTask
+	lastNodeByTask map[uint64]string
+	sender         func(string)
+	statePath      string
 }
 
 func newSink(cfg Config, client *http.Client, endpoint string) *Sink {
 	sink := &Sink{
-		client:    newBotClient(client, endpoint, cfg),
-		queue:     make(chan notification, notificationQueueSize),
-		statePath: defaultStatePath(),
+		client:         newBotClient(client, endpoint, cfg),
+		queue:          make(chan notification, notificationQueueSize),
+		statePath:      defaultStatePath(),
+		planTemplate:   loadTaskPlan(),
+		lastNodeByTask: make(map[uint64]string),
 	}
 	sink.summary = sink.loadSummary()
 	go sink.run()
@@ -61,14 +86,17 @@ func newSink(cfg Config, client *http.Client, endpoint string) *Sink {
 }
 
 // OnTaskerTask collects top-level task results into a single run summary.
-func (s *Sink) OnTaskerTask(tasker *maa.Tasker, event maa.EventStatus, detail maa.TaskerTaskDetail) {
+func (s *Sink) OnTaskerTask(_ *maa.Tasker, event maa.EventStatus, detail maa.TaskerTaskDetail) {
+	if strings.HasPrefix(detail.Entry, "__PRETASK__") {
+		return
+	}
 	switch event {
 	case maa.EventStatusStarting:
 		s.onTaskStarting(detail)
 	case maa.EventStatusSucceeded:
-		s.onTaskFinished(tasker, detail, true)
+		s.onTaskFinished(detail, true)
 	case maa.EventStatusFailed:
-		s.onTaskFinished(tasker, detail, false)
+		s.onTaskFinished(detail, false)
 	}
 }
 
@@ -79,14 +107,11 @@ func (s *Sink) onTaskStarting(detail maa.TaskerTaskDetail) {
 			s.mu.Unlock()
 			return
 		}
-		summary := s.summary
+		summary := cloneSummary(s.summary)
 		s.summary = runSummary{}
 		s.mu.Unlock()
 
-		// Closing the game and closing MXU are destructive control actions. Send
-		// the result before either action starts, and do not return until Telegram
-		// has responded. In particular, MXU_KILLPROC may terminate MXU from inside
-		// the action, so its terminal callback is not a safe notification point.
+		// The shutdown task can terminate the host before its terminal callback.
 		s.send(formatRunSummary(summary))
 		s.clearSummary()
 		return
@@ -95,10 +120,11 @@ func (s *Sink) onTaskStarting(detail maa.TaskerTaskDetail) {
 	s.mu.Lock()
 	isNewRun := !s.summary.active
 	if isNewRun {
-		s.summary = runSummary{active: true}
+		s.summary = runSummary{active: true, tasks: cloneTasks(s.planTemplate)}
 	}
 	s.summary.total++
-	summary := s.summary
+	markTaskStarting(&s.summary, detail)
+	summary := cloneSummary(s.summary)
 	s.mu.Unlock()
 	s.persistSummary(summary)
 
@@ -107,40 +133,59 @@ func (s *Sink) onTaskStarting(detail maa.TaskerTaskDetail) {
 	}
 }
 
-func (s *Sink) onTaskFinished(tasker *maa.Tasker, detail maa.TaskerTaskDetail, succeeded bool) {
+func (s *Sink) onTaskFinished(detail maa.TaskerTaskDetail, succeeded bool) {
 	s.mu.Lock()
 	if !s.summary.active {
-		// Shutdown actions finish after the summary has already been sent. They
-		// are control actions and must not start a second run summary.
 		s.mu.Unlock()
 		return
 	}
+	keyInfo := s.lastNodeByTask[detail.TaskID]
 	if succeeded {
 		s.summary.succeeded++
 	} else {
-		s.summary.failed = append(s.summary.failed, failedTask{
-			entry: detail.Entry,
-			log:   lastNodeLog(tasker, detail.TaskID),
-		})
+		logText := nodeLog(keyInfo)
+		s.summary.failed = append(s.summary.failed, failedTask{entry: detail.Entry, log: logText})
 	}
-	summary := s.summary
+	markTaskFinished(&s.summary, detail, succeeded, keyInfo)
+	summary := cloneSummary(s.summary)
+	delete(s.lastNodeByTask, detail.TaskID)
 	s.mu.Unlock()
 	s.persistSummary(summary)
 }
 
-func lastNodeLog(tasker *maa.Tasker, taskID uint64) string {
-	if tasker == nil {
+func markTaskStarting(summary *runSummary, detail maa.TaskerTaskDetail) {
+	for i := range summary.tasks {
+		if summary.tasks[i].state == taskPending {
+			summary.tasks[i].state = taskRunning
+			summary.tasks[i].taskID = detail.TaskID
+			summary.tasks[i].entry = detail.Entry
+			return
+		}
+	}
+	summary.tasks = append(summary.tasks, plannedTask{
+		name: detail.Entry, entry: detail.Entry, taskID: detail.TaskID, state: taskRunning,
+	})
+}
+
+func markTaskFinished(summary *runSummary, detail maa.TaskerTaskDetail, succeeded bool, keyInfo string) {
+	state := taskFailed
+	if succeeded {
+		state = taskSucceeded
+	}
+	for i := range summary.tasks {
+		if summary.tasks[i].taskID == detail.TaskID && summary.tasks[i].state == taskRunning {
+			summary.tasks[i].state = state
+			summary.tasks[i].keyInfo = keyInfo
+			return
+		}
+	}
+}
+
+func nodeLog(node string) string {
+	if strings.TrimSpace(node) == "" {
 		return "最后节点未知"
 	}
-	detail, err := tasker.GetTaskDetail(int64(taskID))
-	if err != nil || detail == nil || len(detail.Nodes) == 0 {
-		return "最后节点未知"
-	}
-	last, err := detail.Nodes[len(detail.Nodes)-1].GetDetail()
-	if err != nil || last == nil || strings.TrimSpace(last.Name) == "" {
-		return "最后节点未知"
-	}
-	return fmt.Sprintf("最后节点 %s", last.Name)
+	return fmt.Sprintf("最后节点：%s", node)
 }
 
 func formatRunStarted() string {
@@ -165,6 +210,74 @@ func formatRunSummary(summary runSummary) string {
 		fmt.Fprintf(&builder, "\n❌ %s\n日志：%s", failed.entry, failed.log)
 	}
 	return builder.String()
+}
+
+func formatInterruptedSummary(summary runSummary) string {
+	var succeeded, failed, running, pending []plannedTask
+	for _, task := range summary.tasks {
+		switch task.state {
+		case taskSucceeded:
+			succeeded = append(succeeded, task)
+		case taskFailed:
+			failed = append(failed, task)
+		case taskRunning:
+			running = append(running, task)
+		default:
+			pending = append(pending, task)
+		}
+	}
+
+	var builder strings.Builder
+	builder.WriteString("⚠️ MAA 无日志卡死，外部监控即将重启")
+	writeTaskSection(&builder, "✅ 已成功", succeeded, false)
+	writeTaskSection(&builder, "❌ 已失败", failed, true)
+	writeTaskSection(&builder, "⏳ 执行中", running, true)
+	writeTaskSection(&builder, "⏭ 未执行", pending, false)
+	if len(summary.tasks) == 0 {
+		fmt.Fprintf(&builder, "\n\n✅ 已成功：%d\n❌ 已失败：%d\n⚠️ 未能读取完整任务计划", summary.succeeded, len(summary.failed))
+	}
+	return builder.String()
+}
+
+func writeTaskSection(builder *strings.Builder, title string, tasks []plannedTask, withInfo bool) {
+	fmt.Fprintf(builder, "\n\n%s (%d)", title, len(tasks))
+	for _, task := range tasks {
+		name := task.name
+		if strings.TrimSpace(name) == "" {
+			name = task.entry
+		}
+		fmt.Fprintf(builder, "\n- %s", name)
+		if withInfo {
+			fmt.Fprintf(builder, "\n  %s", nodeLog(task.keyInfo))
+		}
+	}
+}
+
+// onParentExit is called after MaaEnd's parent disappears. It deliberately
+// performs a synchronous send because the process exits immediately afterward.
+func (s *Sink) onParentExit() {
+	s.mu.Lock()
+	if !s.summary.active {
+		s.mu.Unlock()
+		return
+	}
+	summary := cloneSummary(s.summary)
+	s.summary = runSummary{}
+	s.mu.Unlock()
+
+	s.send(formatInterruptedSummary(summary))
+	s.clearSummary()
+}
+
+func cloneSummary(summary runSummary) runSummary {
+	cloned := summary
+	cloned.failed = append([]failedTask(nil), summary.failed...)
+	cloned.tasks = cloneTasks(summary.tasks)
+	return cloned
+}
+
+func cloneTasks(tasks []plannedTask) []plannedTask {
+	return append([]plannedTask(nil), tasks...)
 }
 
 func (s *Sink) enqueue(text string) {
