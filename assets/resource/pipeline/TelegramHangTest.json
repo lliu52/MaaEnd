@@ -1,4 +1,13 @@
 {
+    "TelegramFailureLogTestStart": {
+        "desc": "TEST ONLY: intentional failure carrying a Telegram key log",
+        "recognition": "DirectHit",
+        "action": "Custom",
+        "custom_action": "FalseAction",
+        "focus": {
+            "Node.PipelineNode.Failed": "TEST KEY LOG: intentional failure captured before the no-log hang"
+        }
+    },
     "TelegramHangTestStart": {
         "desc": "TEST ONLY: intentional no-log hang for Telegram watchdog validation",
         "recognition": "DirectHit",

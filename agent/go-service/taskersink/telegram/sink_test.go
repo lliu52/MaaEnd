@@ -31,10 +31,16 @@ func TestFailureUsesTrackedNodeWithoutReverseQuery(t *testing.T) {
 	task := maa.TaskerTaskDetail{TaskID: 7, Entry: "SellProduct"}
 	sink.OnTaskerTask(nil, maa.EventStatusStarting, task)
 	_ = receiveNotification(t, sink.queue)
-	sink.OnNodePipelineNode(nil, maa.EventStatusStarting, maa.NodePipelineNodeDetail{TaskID: 7, Name: "SellProductConfirm"})
+	sink.OnNodePipelineNode(nil, maa.EventStatusFailed, maa.NodePipelineNodeDetail{
+		TaskID: 7,
+		Name:   "SellProductConfirm",
+		Focus:  "商品确认按钮识别失败",
+	})
+	// A cleanup/fallback node after the failure must not erase the key failure.
+	sink.OnNodePipelineNode(nil, maa.EventStatusStarting, maa.NodePipelineNodeDetail{TaskID: 7, Name: "SellProductCleanup"})
 	sink.OnTaskerTask(nil, maa.EventStatusFailed, task)
 
-	if got := sink.summary.failed[0].log; got != "最后节点：SellProductConfirm" {
+	if got := sink.summary.failed[0].log; got != "失败节点：SellProductConfirm\n关键日志：商品确认按钮识别失败" {
 		t.Fatalf("failure log = %q", got)
 	}
 }
@@ -85,7 +91,7 @@ func TestInterruptedSummaryIncludesAllTaskStates(t *testing.T) {
 	t.Parallel()
 	summary := runSummary{tasks: []plannedTask{
 		{name: "领取奖励", state: taskSucceeded},
-		{name: "售卖产品", state: taskFailed, keyInfo: "SellProductConfirm"},
+		{name: "售卖产品", state: taskFailed, keyInfo: "失败节点：SellProductConfirm\n关键日志：商品确认按钮识别失败"},
 		{name: "自动囤货", state: taskRunning, keyInfo: "OpenStockpile"},
 		{name: "好友互动", state: taskPending},
 	}}
@@ -93,7 +99,7 @@ func TestInterruptedSummaryIncludesAllTaskStates(t *testing.T) {
 	for _, expected := range []string{
 		"⚠️ MAA 无日志卡死，外部监控即将重启",
 		"✅ 已成功 (1)", "领取奖励",
-		"❌ 已失败 (1)", "售卖产品", "最后节点：SellProductConfirm",
+		"❌ 已失败 (1)", "售卖产品", "失败节点：SellProductConfirm", "关键日志：商品确认按钮识别失败",
 		"⏳ 执行中 (1)", "自动囤货", "最后节点：OpenStockpile",
 		"⏭ 未执行 (1)", "好友互动",
 	} {

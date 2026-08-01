@@ -1,6 +1,24 @@
 {
     "task": [
         {
+            "name": "TelegramFailureLogTest",
+            "label": "🧪 Telegram 失败关键日志测试（测试版专用）",
+            "entry": "TelegramFailureLogTestStart",
+            "description": "立即产生一次带明确关键日志的任务失败，用于验证 Telegram 中断快照中的失败节点与关键日志。",
+            "controller": [
+                "ADB",
+                "CloudADB",
+                "MacOS-Background",
+                "MacOS-Front",
+                "PlayCover",
+                "Win32-Front",
+                "Wlroots"
+            ],
+            "group": [
+                "other_menu"
+            ]
+        },
+        {
             "name": "TelegramHangTest",
             "label": "🧪 Telegram 无日志卡死测试（测试版专用）",
             "entry": "TelegramHangTestStart",

@@ -189,6 +189,9 @@ func nodeLog(node string) string {
 	if strings.TrimSpace(node) == "" {
 		return "最后节点未知"
 	}
+	if isFailureKeyInfo(node) {
+		return node
+	}
 	return fmt.Sprintf("最后节点：%s", node)
 }
 
@@ -260,7 +263,7 @@ func writeTaskSection(builder *strings.Builder, title string, tasks []plannedTas
 		}
 		fmt.Fprintf(builder, "\n- %s", name)
 		if withInfo {
-			fmt.Fprintf(builder, "\n  %s", nodeLog(task.keyInfo))
+			fmt.Fprintf(builder, "\n  %s", strings.ReplaceAll(nodeLog(task.keyInfo), "\n", "\n  "))
 		}
 	}
 }
