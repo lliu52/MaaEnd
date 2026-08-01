@@ -81,6 +81,9 @@ func newSink(cfg Config, client *http.Client, endpoint string) *Sink {
 		lastNodeByTask: make(map[uint64]string),
 	}
 	sink.summary = sink.loadSummary()
+	if !sink.summary.active {
+		sink.recoverInterruptedSummary()
+	}
 	go sink.run()
 	return sink
 }
@@ -159,11 +162,12 @@ func markTaskStarting(summary *runSummary, detail maa.TaskerTaskDetail) {
 			summary.tasks[i].state = taskRunning
 			summary.tasks[i].taskID = detail.TaskID
 			summary.tasks[i].entry = detail.Entry
+			summary.tasks[i].keyInfo = detail.Entry
 			return
 		}
 	}
 	summary.tasks = append(summary.tasks, plannedTask{
-		name: detail.Entry, entry: detail.Entry, taskID: detail.TaskID, state: taskRunning,
+		name: detail.Entry, entry: detail.Entry, taskID: detail.TaskID, state: taskRunning, keyInfo: detail.Entry,
 	})
 }
 
@@ -213,6 +217,14 @@ func formatRunSummary(summary runSummary) string {
 }
 
 func formatInterruptedSummary(summary runSummary) string {
+	return formatInterruptedSummaryWithHeading(summary, "⚠️ MAA 无日志卡死，外部监控即将重启")
+}
+
+func formatRecoveredSummary(summary runSummary) string {
+	return formatInterruptedSummaryWithHeading(summary, "⚠️ MAA 检测到上次运行无日志中断，外部监控已重启")
+}
+
+func formatInterruptedSummaryWithHeading(summary runSummary, heading string) string {
 	var succeeded, failed, running, pending []plannedTask
 	for _, task := range summary.tasks {
 		switch task.state {
@@ -228,7 +240,7 @@ func formatInterruptedSummary(summary runSummary) string {
 	}
 
 	var builder strings.Builder
-	builder.WriteString("⚠️ MAA 无日志卡死，外部监控即将重启")
+	builder.WriteString(heading)
 	writeTaskSection(&builder, "✅ 已成功", succeeded, false)
 	writeTaskSection(&builder, "❌ 已失败", failed, true)
 	writeTaskSection(&builder, "⏳ 执行中", running, true)

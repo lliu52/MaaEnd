@@ -23,14 +23,14 @@ OneDragon 的 `no_log_timeout_seconds` 应设为小于或等于 `300`。当前�
 
 ## 预期结果
 
-达到无日志阈值后，OneDragon 终止 MaaEnd。Go Agent 在检测到父进程退出后，会在退出前同步发送一条 Telegram 快照，其中包括：
+达到无日志阈值后，OneDragon 会终止 MaaEnd 及其 Agent 子进程。由于 Agent 也会被强制结束，它无法在旧进程中发送通知；重启后的新 Agent 会检测 30 分钟内遗留且仍有任务处于 `running` 的状态文件，并立即补发一条 Telegram 快照，其中包括：
 
 - 已成功任务；
 - 已失败任务及最后节点；
 - 正在执行的卡死测试任务及最后节点；
 - 尚未执行的后续任务。
 
-Agent 每秒检查一次父进程。Telegram 请求超时为 10 秒，整个退出处理最长等待 12 秒。无论发送成功与否，OneDragon 后续重启不会被无限阻塞。
+Telegram 请求超时为 10 秒。恢复通知发生在新 Agent 注册 Telegram 通知组件时，因此通常会晚于 OneDragon 的“重试运行脚本”日志数十秒，具体取决于游戏和 MaaEnd 重启速度。
 
 ## 调试信息
 
@@ -47,4 +47,4 @@ Agent 每秒检查一次父进程。Telegram 请求超时为 10 秒，整个退�
 - `parent-watcher`
 - `telegram`
 
-正常时间线应依次出现“进入 intentional no-log hang”、OneDragon 无日志终止、`parent process has exited`、`sending interrupted Telegram snapshot synchronously` 和发送完成记录。
+正常时间线应依次出现“进入 intentional no-log hang”、OneDragon 无日志终止、新 MaaEnd 启动、`recovered interrupted run after complete process-tree termination` 和恢复发送完成记录。

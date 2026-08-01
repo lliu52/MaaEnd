@@ -51,6 +51,9 @@ func TestPretaskDoesNotConsumeTaskPlan(t *testing.T) {
 	if sink.summary.tasks[0].taskID != 2 || sink.summary.tasks[0].state != taskRunning {
 		t.Fatalf("task plan = %+v", sink.summary.tasks)
 	}
+	if sink.summary.tasks[0].keyInfo != "SellProduct" {
+		t.Fatalf("running task fallback key info = %q", sink.summary.tasks[0].keyInfo)
+	}
 }
 
 func TestSinkReportsOneMessagePerRunBoundary(t *testing.T) {
@@ -167,6 +170,65 @@ func TestSummarySurvivesAgentRestart(t *testing.T) {
 	secondAgent.summary = secondAgent.loadSummary()
 	if !secondAgent.summary.active || secondAgent.summary.tasks[0].state != taskSucceeded || secondAgent.summary.tasks[1].state != taskPending {
 		t.Fatalf("restored summary = %+v", secondAgent.summary)
+	}
+}
+
+func TestRecoverInterruptedSummaryAfterProcessTreeKill(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	stalePath := filepath.Join(dir, "telegram-run-summary-36268.json")
+	currentPath := filepath.Join(dir, "telegram-run-summary-37132.json")
+	staleSink := testSink()
+	staleSink.statePath = stalePath
+	staleSink.persistSummary(runSummary{
+		active: true, total: 3, succeeded: 1,
+		tasks: []plannedTask{
+			{name: "已完成任务", state: taskSucceeded},
+			{name: "卡死测试", entry: "TelegramHangTestStart", state: taskRunning, keyInfo: "TelegramHangTestStart"},
+			{name: "后续任务", state: taskPending},
+		},
+	})
+
+	sink := testSink()
+	sink.statePath = currentPath
+	messages := make(chan string, 1)
+	sink.sender = func(text string) { messages <- text }
+	sink.recoverInterruptedSummary()
+
+	message := receiveText(t, messages)
+	for _, expected := range []string{
+		"检测到上次运行无日志中断，外部监控已重启",
+		"✅ 已成功 (1)", "⏳ 执行中 (1)", "卡死测试",
+		"最后节点：TelegramHangTestStart", "⏭ 未执行 (1)",
+	} {
+		if !strings.Contains(message, expected) {
+			t.Errorf("message does not contain %q:\n%s", expected, message)
+		}
+	}
+	if _, err := os.Stat(stalePath); !os.IsNotExist(err) {
+		t.Fatalf("recovered state was not removed: %v", err)
+	}
+}
+
+func TestRecoveryIgnoresGracefullyStoppedSummary(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	staleSink := testSink()
+	staleSink.statePath = filepath.Join(dir, "telegram-run-summary-100.json")
+	staleSink.persistSummary(runSummary{
+		active: true, total: 1, succeeded: 1,
+		tasks: []plannedTask{{name: "已完成任务", state: taskSucceeded}},
+	})
+
+	sink := testSink()
+	sink.statePath = filepath.Join(dir, "telegram-run-summary-200.json")
+	messages := make(chan string, 1)
+	sink.sender = func(text string) { messages <- text }
+	sink.recoverInterruptedSummary()
+	select {
+	case message := <-messages:
+		t.Fatalf("unexpected recovered message: %q", message)
+	case <-time.After(100 * time.Millisecond):
 	}
 }
 
