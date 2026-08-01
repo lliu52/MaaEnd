@@ -258,6 +258,9 @@ func writeTaskSection(builder *strings.Builder, title string, tasks []plannedTas
 func (s *Sink) onParentExit() {
 	s.mu.Lock()
 	if !s.summary.active {
+		log.Warn().
+			Str("component", "telegram").
+			Msg("parent exited with no active run; interrupted notification skipped")
 		s.mu.Unlock()
 		return
 	}
@@ -265,7 +268,18 @@ func (s *Sink) onParentExit() {
 	s.summary = runSummary{}
 	s.mu.Unlock()
 
+	log.Warn().
+		Str("component", "telegram").
+		Int("configured_tasks", len(summary.tasks)).
+		Int("started_tasks", summary.total).
+		Int("succeeded_tasks", summary.succeeded).
+		Int("failed_tasks", len(summary.failed)).
+		Str("state_path", s.statePath).
+		Msg("parent exited during active run; sending interrupted Telegram snapshot synchronously")
 	s.send(formatInterruptedSummary(summary))
+	log.Info().
+		Str("component", "telegram").
+		Msg("interrupted Telegram snapshot send attempt finished; clearing state")
 	s.clearSummary()
 }
 

@@ -1,0 +1,23 @@
+{
+    "task": [
+        {
+            "name": "TelegramHangTest",
+            "label": "🧪 Telegram 无日志卡死测试（测试版专用）",
+            "entry": "TelegramHangTestStart",
+            "description": "输出一次诊断信息后至少 300 秒完全静默，并持续阻塞直到 OneDragon 终止 MaaEnd。用于验证无日志重启前的 Telegram 中断快照。",
+            "controller": [
+                "ADB",
+                "CloudADB",
+                "MacOS-Background",
+                "MacOS-Front",
+                "PlayCover",
+                "Win32-Front",
+                "Wlroots"
+            ],
+            "group": [
+                "other_menu"
+            ]
+        }
+    ],
+    "option": {}
+}

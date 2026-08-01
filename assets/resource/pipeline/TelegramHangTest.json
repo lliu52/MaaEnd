@@ -1,0 +1,14 @@
+{
+    "TelegramHangTestStart": {
+        "desc": "TEST ONLY: intentional no-log hang for Telegram watchdog validation",
+        "recognition": "DirectHit",
+        "action": "Custom",
+        "custom_action": "TelegramNoLogHangTestAction",
+        "custom_action_param": {
+            "silence_seconds": 300
+        },
+        "focus": {
+            "Node.Action.Starting": "🧪 测试任务已进入故意卡死状态：从现在开始不再输出日志，等待 OneDragon 无日志监控终止 MaaEnd。"
+        }
+    }
+}
