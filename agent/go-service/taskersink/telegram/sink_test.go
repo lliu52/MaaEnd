@@ -62,6 +62,22 @@ func TestPretaskDoesNotConsumeTaskPlan(t *testing.T) {
 	}
 }
 
+func TestPostStopControlTaskDoesNotStartRun(t *testing.T) {
+	t.Parallel()
+	sink := testSink()
+	postStop := maa.TaskerTaskDetail{TaskID: 14, Entry: "MaaTaskerPostStop"}
+	sink.OnTaskerTask(nil, maa.EventStatusStarting, postStop)
+	sink.OnTaskerTask(nil, maa.EventStatusSucceeded, postStop)
+	if sink.summary.active || sink.summary.total != 0 {
+		t.Fatalf("post-stop control task created summary: %+v", sink.summary)
+	}
+	select {
+	case message := <-sink.queue:
+		t.Fatalf("post-stop control task produced notification: %q", message.text)
+	default:
+	}
+}
+
 func TestSinkReportsOneMessagePerRunBoundary(t *testing.T) {
 	t.Parallel()
 	sink := testSink()
@@ -128,6 +144,34 @@ func TestParentExitSendsInterruptedSummaryAndClearsState(t *testing.T) {
 	}
 	if _, err := os.Stat(statePath); !os.IsNotExist(err) {
 		t.Fatalf("summary state was not removed: %v", err)
+	}
+}
+
+func TestParentExitWithoutRunningTaskIsNormalShutdown(t *testing.T) {
+	t.Parallel()
+	statePath := filepath.Join(t.TempDir(), "telegram-run-summary.json")
+	sink := testSink()
+	sink.statePath = statePath
+	sink.summary = runSummary{
+		active: true, total: 2, succeeded: 2,
+		tasks: []plannedTask{
+			{name: "AutoUseSpMedication", state: taskSucceeded},
+			{name: "ProtocolSpace1", state: taskSucceeded},
+			{name: "ProtocolSpace2", state: taskPending},
+		},
+	}
+	sink.persistSummary(sink.summary)
+	messages := make(chan string, 1)
+	sink.sender = func(text string) { messages <- text }
+
+	sink.onParentExit()
+	select {
+	case message := <-messages:
+		t.Fatalf("normal shutdown produced interrupted notification: %q", message)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if _, err := os.Stat(statePath); !os.IsNotExist(err) {
+		t.Fatalf("normal shutdown state was not removed: %v", err)
 	}
 }
 

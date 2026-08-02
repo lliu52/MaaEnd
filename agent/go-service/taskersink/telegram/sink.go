@@ -23,6 +23,10 @@ var shutdownTaskEntries = map[string]struct{}{
 	"__MXU_KILLPROC__": {},
 }
 
+var ignoredTaskEntries = map[string]struct{}{
+	"MaaTaskerPostStop": {},
+}
+
 type notification struct {
 	text string
 }
@@ -91,6 +95,9 @@ func newSink(cfg Config, client *http.Client, endpoint string) *Sink {
 // OnTaskerTask collects top-level task results into a single run summary.
 func (s *Sink) OnTaskerTask(_ *maa.Tasker, event maa.EventStatus, detail maa.TaskerTaskDetail) {
 	if strings.HasPrefix(detail.Entry, "__PRETASK__") {
+		return
+	}
+	if _, ignored := ignoredTaskEntries[detail.Entry]; ignored {
 		return
 	}
 	switch event {
@@ -282,6 +289,16 @@ func (s *Sink) onParentExit() {
 	summary := cloneSummary(s.summary)
 	s.summary = runSummary{}
 	s.mu.Unlock()
+	if !hasRunningTask(summary) {
+		log.Info().
+			Str("component", "telegram").
+			Int("started_tasks", summary.total).
+			Int("succeeded_tasks", summary.succeeded).
+			Int("failed_tasks", len(summary.failed)).
+			Msg("parent exited with no running task; treating as normal shutdown and suppressing interrupted notification")
+		s.clearSummary()
+		return
+	}
 
 	log.Warn().
 		Str("component", "telegram").
