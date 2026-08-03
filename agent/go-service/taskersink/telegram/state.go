@@ -195,6 +195,35 @@ func hasRunningTask(summary runSummary) bool {
 	return false
 }
 
+// claimSummaryNotification ensures that only one Agent process sends the
+// terminal notification when MXU briefly starts multiple Agents during
+// shutdown. The lock is created atomically across processes.
+func (s *Sink) claimSummaryNotification() bool {
+	if s.statePath == "" {
+		return true
+	}
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	if _, err := os.Stat(s.statePath); err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			log.Warn().Err(err).Msg("Failed to inspect Telegram run summary state before notification")
+		}
+		return false
+	}
+	lockPath := s.statePath + ".notify.lock"
+	lock, err := os.OpenFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		if !errors.Is(err, os.ErrExist) {
+			log.Warn().Err(err).Msg("Failed to claim Telegram terminal notification")
+		}
+		return false
+	}
+	if err := lock.Close(); err != nil {
+		log.Warn().Err(err).Msg("Failed to close Telegram notification claim")
+	}
+	return true
+}
+
 func (s *Sink) clearSummary() {
 	if s.statePath == "" {
 		return
@@ -203,5 +232,17 @@ func (s *Sink) clearSummary() {
 	defer s.stateMu.Unlock()
 	if err := os.Remove(s.statePath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		log.Warn().Err(err).Msg("Failed to clear Telegram run summary state")
+	}
+}
+
+func (s *Sink) clearNotificationClaim() {
+	if s.statePath == "" {
+		return
+	}
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	lockPath := s.statePath + ".notify.lock"
+	if err := os.Remove(lockPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		log.Warn().Err(err).Msg("Failed to clear Telegram notification claim")
 	}
 }

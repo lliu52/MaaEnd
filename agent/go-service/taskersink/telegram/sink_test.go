@@ -165,13 +165,57 @@ func TestParentExitWithoutRunningTaskIsNormalShutdown(t *testing.T) {
 	sink.sender = func(text string) { messages <- text }
 
 	sink.onParentExit()
-	select {
-	case message := <-messages:
-		t.Fatalf("normal shutdown produced interrupted notification: %q", message)
-	case <-time.After(100 * time.Millisecond):
+	message := receiveText(t, messages)
+	for _, expected := range []string{"MAA 运行完成", "任务成功 2/2"} {
+		if !strings.Contains(message, expected) {
+			t.Errorf("normal summary does not contain %q: %s", expected, message)
+		}
 	}
 	if _, err := os.Stat(statePath); !os.IsNotExist(err) {
 		t.Fatalf("normal shutdown state was not removed: %v", err)
+	}
+}
+
+func TestParentExitSendsOnlyOneSummaryAcrossAgents(t *testing.T) {
+	t.Parallel()
+	statePath := filepath.Join(t.TempDir(), "telegram-run-summary.json")
+	summary := runSummary{
+		active: true, total: 1, succeeded: 1,
+		tasks: []plannedTask{{name: "DailyRewards", state: taskSucceeded}},
+	}
+	first := testSink()
+	first.statePath = statePath
+	first.summary = cloneSummary(summary)
+	first.persistSummary(summary)
+	second := testSink()
+	second.statePath = statePath
+	second.summary = cloneSummary(summary)
+	messages := make(chan string, 2)
+	first.sender = func(text string) { messages <- text }
+	second.sender = func(text string) { messages <- text }
+
+	start := make(chan struct{})
+	done := make(chan struct{}, 2)
+	for _, sink := range []*Sink{first, second} {
+		go func(sink *Sink) {
+			<-start
+			sink.onParentExit()
+			done <- struct{}{}
+		}(sink)
+	}
+	close(start)
+	<-done
+	<-done
+
+	select {
+	case <-messages:
+	default:
+		t.Fatal("no terminal summary was sent")
+	}
+	select {
+	case message := <-messages:
+		t.Fatalf("duplicate terminal summary was sent: %q", message)
+	default:
 	}
 }
 

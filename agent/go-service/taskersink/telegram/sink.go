@@ -136,6 +136,9 @@ func (s *Sink) onTaskStarting(detail maa.TaskerTaskDetail) {
 	markTaskStarting(&s.summary, detail)
 	summary := cloneSummary(s.summary)
 	s.mu.Unlock()
+	if isNewRun {
+		s.clearNotificationClaim()
+	}
 	s.persistSummary(summary)
 
 	if isNewRun {
@@ -289,13 +292,20 @@ func (s *Sink) onParentExit() {
 	summary := cloneSummary(s.summary)
 	s.summary = runSummary{}
 	s.mu.Unlock()
+	if !s.claimSummaryNotification() {
+		log.Info().
+			Str("component", "telegram").
+			Msg("terminal notification already claimed by another Agent; skipping duplicate")
+		return
+	}
 	if !hasRunningTask(summary) {
 		log.Info().
 			Str("component", "telegram").
 			Int("started_tasks", summary.total).
 			Int("succeeded_tasks", summary.succeeded).
 			Int("failed_tasks", len(summary.failed)).
-			Msg("parent exited with no running task; treating as normal shutdown and suppressing interrupted notification")
+			Msg("parent exited with no running task; sending normal Telegram summary synchronously")
+		s.send(formatRunSummary(summary))
 		s.clearSummary()
 		return
 	}
