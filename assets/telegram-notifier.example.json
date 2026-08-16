@@ -1,0 +1,6 @@
+{
+    "bot_token": "123456789:replace-with-your-bot-token",
+    "chat_id": "replace-with-your-chat-id",
+    "message_thread_id": 0,
+    "disable_notification": false
+}
