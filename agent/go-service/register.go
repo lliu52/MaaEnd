@@ -44,6 +44,7 @@ import (
 	"github.com/MaaXYZ/MaaEnd/agent/go-service/seizedeliveryjobs"
 	"github.com/MaaXYZ/MaaEnd/agent/go-service/taskersink/aspectratio"
 	"github.com/MaaXYZ/MaaEnd/agent/go-service/taskersink/cursormove"
+	"github.com/MaaXYZ/MaaEnd/agent/go-service/taskersink/dailyrewardtelegram"
 	"github.com/MaaXYZ/MaaEnd/agent/go-service/taskersink/hdrcheck"
 	"github.com/MaaXYZ/MaaEnd/agent/go-service/taskersink/processcheck"
 	"github.com/MaaXYZ/MaaEnd/agent/go-service/taskersink/taskfail"
@@ -62,6 +63,7 @@ func registerAll() {
 	processcheck.Register()
 	taskfail.Register()
 	cursormove.Register()
+	dailyrewardtelegram.Register()
 
 	// General Custom
 	subtask.Register()

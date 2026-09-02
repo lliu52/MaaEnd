@@ -480,8 +480,11 @@
     },
     "DailyTaskComplete": {
         "action": {
-            "type": "DoNothing",
-            "param": {}
+            "type": "Custom",
+            "param": {
+                "custom_action": "DailyRewardTelegramScreenshot",
+                "custom_action_param": {}
+            }
         }
     }
 }

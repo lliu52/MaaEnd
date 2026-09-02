@@ -464,6 +464,7 @@ debug
 
 # macOS
 .DS_Store
+telegram-notifier.json
 .AppleDouble
 .LSOverride
 ._*
