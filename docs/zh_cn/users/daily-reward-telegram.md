@@ -1,5 +1,8 @@
 # 日常奖励 Telegram 截图
 
+此定制构建已移除 `interface.json` 中的 GitHub 与 MirrorChyan 更新源，MXU
+不会检查、下载或安装 MaaEnd 官方更新，避免自动更新覆盖 Telegram 功能。
+
 启用后，“📅日常奖励领取”中的每日任务奖励流程完成时，MaaEnd 会截取当前“行动手册 → 日常”页面，并通过 Telegram Bot 发送。截图保留左侧活跃度奖励栏，可用于确认 100 活跃度奖励是否已经领取。
 
 ## 配置

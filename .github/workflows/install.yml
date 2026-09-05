@@ -457,15 +457,6 @@ jobs:
           name: MaaEnd-macos-${{ matrix.arch }}-intermediate
           path: "install"
 
-      - name: Update mirrorchyan_rid for macOS
-        shell: bash
-        run: |
-          # 更新 interface.json 中的 mirrorchyan_rid 为 MaaEnd_exec
-          jq --indent 4 '.mirrorchyan_rid = "MaaEnd_exec"' install/interface.json > install/interface.json.tmp
-          mv install/interface.json.tmp install/interface.json
-          echo "Updated mirrorchyan_rid to MaaEnd_exec"
-          cat install/interface.json | grep mirrorchyan_rid
-
       - name: Package DMG
         shell: bash
         run: |

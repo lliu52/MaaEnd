@@ -1,5 +1,9 @@
 # Daily Reward Telegram Screenshot
 
+This custom build removes the GitHub and MirrorChyan update sources from
+`interface.json`. MXU will not check for, download, or install official MaaEnd
+updates, preventing them from overwriting the Telegram feature.
+
 When enabled, MaaEnd captures the current Operational Manual daily-task page after the daily task reward flow finishes and sends it through a Telegram bot. The screenshot includes the activity reward column so that the 100-point reward status can be checked directly.
 
 ## Configuration
